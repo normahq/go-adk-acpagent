@@ -411,6 +411,36 @@ func TestIsACPSessionAlreadyExistsError(t *testing.T) {
 	}
 }
 
+func TestAgentNewValidationAndDefaults(t *testing.T) {
+	t.Parallel()
+
+	if _, err := New(Config{}); err == nil || !strings.Contains(err.Error(), "acp command is required") {
+		t.Fatalf("New(empty command) error = %v, want command required", err)
+	}
+
+	a, err := New(Config{
+		Command:    helperCommand(t),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New(defaults) error = %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	if a.Name() != defaultAgentName {
+		t.Fatalf("Name() = %q, want %q", a.Name(), defaultAgentName)
+	}
+	if a.Description() != defaultAgentDescription {
+		t.Fatalf("Description() = %q, want %q", a.Description(), defaultAgentDescription)
+	}
+
+	if _, err := New(Config{
+		Command:    []string{"sh", "-c", "exit 1"},
+		WorkingDir: t.TempDir(),
+	}); err == nil || !strings.Contains(err.Error(), "initialize acp client") {
+		t.Fatalf("New(init failure) error = %v, want initialize error", err)
+	}
+}
+
 func TestClientSuppressesPeerDisconnectInfoByDefault(t *testing.T) {
 	var stderr bytes.Buffer
 	client, err := NewClient(context.Background(), ClientConfig{
