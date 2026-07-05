@@ -14,16 +14,30 @@ for CI.
 ## Usage
 
 ```go
-import acpagent "github.com/normahq/go-adk-acpagent"
+package main
 
-agentRuntime, err := acpagent.New(acpagent.Config{
-	Command:    []string{"codex-acp"},
-	WorkingDir: "/workspace",
-})
-if err != nil {
-	return err
+import (
+	"log"
+
+	acpagent "github.com/normahq/go-adk-acpagent"
+)
+
+func main() {
+	agentRuntime, err := acpagent.New(acpagent.Config{
+		Command:    []string{"codex-acp"},
+		WorkingDir: "/workspace",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		if err := agentRuntime.Close(); err != nil {
+			log.Printf("close ACP agent: %v", err)
+		}
+	}()
+
+	_ = agentRuntime
 }
-defer agentRuntime.Close()
 ```
 
 Provider error metadata helpers are available from:

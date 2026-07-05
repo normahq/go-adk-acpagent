@@ -714,7 +714,6 @@ func (c *Client) promptWithBlocks(
 			c.logLastChunkInSeries(activeSessionID)
 		}
 		if err != nil {
-			l.Error().Err(err).Str("acp_session_id", sessionID).Msg("acp session/prompt failed")
 			resultCh <- PromptResult{Err: err}
 			return
 		}

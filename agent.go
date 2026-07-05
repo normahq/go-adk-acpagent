@@ -260,18 +260,14 @@ func New(cfg Config) (*Agent, error) {
 		return nil, err
 	}
 	if _, err := client.Initialize(ctx); err != nil {
-		if closeErr := client.Close(); closeErr != nil {
-			l.Error().Err(closeErr).Msg("failed to close acp client after initialize failure")
-		}
-		return nil, fmt.Errorf("initialize acp client: %w", err)
+		err = fmt.Errorf("initialize acp client: %w", err)
+		return nil, closeClientAfterError(client, err, "close acp client after initialize failure")
 	}
 
 	mcpServers, err := convertMCPServers(cfg.MCPServers)
 	if err != nil {
-		if closeErr := client.Close(); closeErr != nil {
-			l.Error().Err(closeErr).Msg("failed to close acp client after mcp config conversion failure")
-		}
-		return nil, fmt.Errorf("convert mcp servers: %w", err)
+		err = fmt.Errorf("convert mcp servers: %w", err)
+		return nil, closeClientAfterError(client, err, "close acp client after mcp config conversion failure")
 	}
 
 	a := &Agent{
@@ -296,13 +292,18 @@ func New(cfg Config) (*Agent, error) {
 		AfterAgentCallbacks:  cfg.AfterAgentCallbacks,
 	})
 	if err != nil {
-		if closeErr := client.Close(); closeErr != nil {
-			l.Error().Err(closeErr).Msg("failed to close acp client after adk agent creation failure")
-		}
-		return nil, fmt.Errorf("create adk acp agent: %w", err)
+		err = fmt.Errorf("create adk acp agent: %w", err)
+		return nil, closeClientAfterError(client, err, "close acp client after adk agent creation failure")
 	}
 	a.Agent = base
 	return a, nil
+}
+
+func closeClientAfterError(client *Client, err error, closeMsg string) error {
+	if closeErr := client.Close(); closeErr != nil {
+		return errors.Join(err, fmt.Errorf("%s: %w", closeMsg, closeErr))
+	}
+	return err
 }
 
 // Close shuts down the underlying ACP client process.
