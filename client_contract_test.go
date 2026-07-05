@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 	"google.golang.org/adk/session"
@@ -415,6 +417,41 @@ func TestClientLoggingAndCloseHelpers(t *testing.T) {
 	(&logEvent{}).Msg("ignored")
 }
 
+func TestClientWireAndIdleHelpers(t *testing.T) {
+	t.Parallel()
+
+	writer := newWireLoggingWriter(errorWriter{}, newLogger(nil, ""))
+	if n, err := writer.Write([]byte("hello\n")); err == nil || n != 0 {
+		t.Fatalf("wire writer Write() = (%d, %v), want 0 error", n, err)
+	}
+
+	reader := newWireLoggingReader(errorReader{}, newLogger(nil, ""), nil)
+	buf := make([]byte, 8)
+	if n, err := reader.Read(buf); err == nil || n != 0 {
+		t.Fatalf("wire reader Read() = (%d, %v), want 0 error", n, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	waitForUpdateIdle(ctx, make(chan struct{}))
+
+	signal := make(chan struct{}, 1)
+	signal <- struct{}{}
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(started)
+		waitForUpdateIdle(context.Background(), signal)
+		close(done)
+	}()
+	<-started
+	select {
+	case <-done:
+	case <-time.After(2 * idleUpdateWindow):
+		t.Fatal("waitForUpdateIdle() did not return after signal reset")
+	}
+}
+
 func TestCloseClientAfterError(t *testing.T) {
 	t.Parallel()
 
@@ -449,3 +486,111 @@ type testWriteCloser struct{}
 func (testWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 
 func (testWriteCloser) Close() error { return nil }
+
+type errorWriter struct{}
+
+func (errorWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+
+func TestAgentCloseWrapsClientError(t *testing.T) {
+	t.Parallel()
+
+	closed := make(chan struct{})
+	close(closed)
+	a := &Agent{client: &Client{
+		stdin:        testWriteCloser{},
+		closed:       closed,
+		closeErr:     errors.New("wait failed"),
+		logger:       newLogger(nil, ""),
+		dispatchDone: make(chan struct{}),
+	}}
+	if err := a.Close(); err == nil || !strings.Contains(err.Error(), "close acp client") {
+		t.Fatalf("Agent.Close() error = %v, want wrapped client close error", err)
+	}
+}
+
+func TestRequestErrorAndEncodingHelpers(t *testing.T) {
+	t.Parallel()
+
+	if got := acpRequestErrorDataString(map[string]any{"bad": func() {}}); !strings.Contains(got, "map[bad:") {
+		t.Fatalf("acpRequestErrorDataString(unmarshalable) = %q, want fmt fallback", got)
+	}
+	if data, err := decodeBase64(""); err == nil || data != nil {
+		t.Fatalf("decodeBase64(empty) = (%v, %v), want nil error", data, err)
+	}
+}
+
+func TestClientWaitLoopOutcomes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		command   []string
+		ctx       context.Context
+		closing   bool
+		wantError bool
+		wantEOF   bool
+	}{
+		{name: "success", command: []string{"sh", "-c", "exit 0"}, ctx: context.Background(), wantEOF: true},
+		{name: "process error", command: []string{"sh", "-c", "exit 7"}, ctx: context.Background(), wantError: true},
+		{name: "closing error", command: []string{"sh", "-c", "exit 7"}, ctx: context.Background(), closing: true, wantEOF: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := newWaitLoopTestClient(t, tc.ctx, tc.command...)
+			client.closing.Store(tc.closing)
+			client.waitLoop()
+			if tc.wantEOF {
+				if !errors.Is(client.closeErr, io.EOF) {
+					t.Fatalf("closeErr = %v, want EOF", client.closeErr)
+				}
+			} else if tc.wantError {
+				if client.closeErr == nil || !strings.Contains(client.closeErr.Error(), "acp process exit") {
+					t.Fatalf("closeErr = %v, want process exit error", client.closeErr)
+				}
+			}
+		})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	client := newWaitLoopTestClient(t, ctx, "sh", "-c", "exit 7")
+	cancel()
+	client.waitLoop()
+	if !errors.Is(client.closeErr, context.Canceled) {
+		t.Fatalf("closeErr = %v, want context canceled", client.closeErr)
+	}
+}
+
+func TestClientCloseKillsRunningProcess(t *testing.T) {
+	t.Parallel()
+
+	client := newWaitLoopTestClient(t, context.Background(), "sh", "-c", "sleep 5")
+	client.stdin = testWriteCloser{}
+	go client.waitLoop()
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+}
+
+func newWaitLoopTestClient(t *testing.T, ctx context.Context, command ...string) *Client {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("cmd.Start() error = %v", err)
+	}
+	dispatchDone := make(chan struct{})
+	close(dispatchDone)
+	return &Client{
+		ctx:             ctx,
+		cmd:             cmd,
+		stdin:           testWriteCloser{},
+		logger:          newLogger(nil, ""),
+		activeBySession: map[acp.SessionId]*activePrompt{},
+		closed:          make(chan struct{}),
+		dispatchDone:    dispatchDone,
+	}
+}
