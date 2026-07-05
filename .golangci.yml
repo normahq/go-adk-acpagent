@@ -1,0 +1,53 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: fast
+  disable:
+    - wsl
+    - wsl_v5
+    - depguard
+    - nlreturn
+    - lll
+    - mnd
+    - funlen
+    - gocognit
+    - cyclop
+    - nestif
+    - godoclint
+    - testpackage
+    - interfacebloat
+    - gocyclo
+    - maintidx
+    - embeddedstructfieldcheck
+    - funcorder
+    - tagalign
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - revive
+    - misspell
+    - unconvert
+    - goconst
+    - gocritic
+    - whitespace
+    - nolintlint
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+formatters:
+  enable: []
+  settings: {}
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
