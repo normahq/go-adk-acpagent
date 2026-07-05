@@ -369,6 +369,9 @@ func TestClientQueueAndMarshalHelpers(t *testing.T) {
 	if sessionID, ok := extractPromptScopedSessionID([]byte(`{"threadId":" thread-1 "}`)); !ok || sessionID != "thread-1" {
 		t.Fatalf("extractPromptScopedSessionID(threadId) = (%q, %v), want thread-1 true", sessionID, ok)
 	}
+	if sessionID, ok := extractPromptScopedSessionID([]byte(`{"sessionId":" ","threadId":" "}`)); ok || sessionID != "" {
+		t.Fatalf("extractPromptScopedSessionID(empty ids) = (%q, %v), want empty false", sessionID, ok)
+	}
 	if sessionID, ok := extractPromptScopedSessionID([]byte(`{`)); ok || sessionID != "" {
 		t.Fatalf("extractPromptScopedSessionID(invalid) = (%q, %v), want empty false", sessionID, ok)
 	}
@@ -429,6 +432,21 @@ func TestClientWireAndIdleHelpers(t *testing.T) {
 	buf := make([]byte, 8)
 	if n, err := reader.Read(buf); err == nil || n != 0 {
 		t.Fatalf("wire reader Read() = (%d, %v), want 0 error", n, err)
+	}
+
+	updates := make([]ExtendedSessionNotification, 0, 1)
+	wireBuf := newWireLogBuffer("recv", newLogger(nil, ""), func(update ExtendedSessionNotification) {
+		updates = append(updates, update)
+	})
+	wireBuf.append([]byte("partial"))
+	if len(updates) != 0 {
+		t.Fatalf("updates after partial append = %#v, want none", updates)
+	}
+	wireBuf.append([]byte("\n"))
+	wireBuf.logLine([]byte(`{"jsonrpc":"2.0","method":"session/update","params":[]}`))
+	wireBuf.logLine([]byte(`{"jsonrpc":"2.0","method":"custom/progress","params":{"threadId":"thread-1"}}`))
+	if len(updates) != 1 || updates[0].SessionId != "thread-1" || updates[0].Method != "custom/progress" {
+		t.Fatalf("prompt scoped updates = %#v, want thread-1 custom/progress", updates)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

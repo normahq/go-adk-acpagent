@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -56,6 +57,18 @@ func TestMapACPAgentMessageChunkMetadataVariants(t *testing.T) {
 
 	if ev, ok := mapACPAgentMessageChunk(context.Background(), newLogger(nil, ""), "inv-empty", &acp.SessionUpdateAgentMessageChunk{}); ok || ev != nil {
 		t.Fatalf("mapACPAgentMessageChunk(empty) = (%#v, %v), want nil false", ev, ok)
+	}
+
+	directID := "msg-direct"
+	directEv, ok := mapACPAgentMessageChunk(context.Background(), newLogger(nil, ""), "inv-direct", &acp.SessionUpdateAgentMessageChunk{
+		Content:   acp.TextBlock("direct id"),
+		MessageId: &directID,
+	})
+	if !ok {
+		t.Fatal("mapACPAgentMessageChunk(direct id) ok = false, want true")
+	}
+	if got := directEv.CustomMetadata["acp_message_id"]; got != directID {
+		t.Fatalf("direct acp_message_id = %#v, want %q", got, directID)
 	}
 }
 
@@ -133,6 +146,46 @@ func TestMapACPContentBlockToPartRejectsUnsupportedMedia(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMapACPMappingEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	if ev, ok := mapACPUserMessageChunk(context.Background(), newLogger(nil, ""), "inv-user", &acp.SessionUpdateUserMessageChunk{}); ok || ev != nil {
+		t.Fatalf("mapACPUserMessageChunk(empty) = (%#v, %v), want nil false", ev, ok)
+	}
+	if ev, ok := mapACPAgentThoughtChunk(context.Background(), newLogger(nil, ""), "inv-thought", &acp.SessionUpdateAgentThoughtChunk{}); ok || ev != nil {
+		t.Fatalf("mapACPAgentThoughtChunk(empty) = (%#v, %v), want nil false", ev, ok)
+	}
+
+	pending := acp.ToolCallStatusPending
+	ev, ok := mapACPToolCallUpdate(context.Background(), "inv-tool", &acp.SessionToolCallUpdate{ToolCallId: "tool-1", Status: &pending})
+	if !ok {
+		t.Fatal("mapACPToolCallUpdate(pending) ok = false, want true")
+	}
+	if !reflect.DeepEqual(ev.LongRunningToolIDs, []string{"tool-1"}) {
+		t.Fatalf("LongRunningToolIDs = %#v, want tool-1", ev.LongRunningToolIDs)
+	}
+	completed := acp.ToolCallStatusCompleted
+	ev, ok = mapACPToolCallUpdate(context.Background(), "inv-tool", &acp.SessionToolCallUpdate{ToolCallId: "tool-1", Status: &completed})
+	if !ok {
+		t.Fatal("mapACPToolCallUpdate(completed) ok = false, want true")
+	}
+	if len(ev.LongRunningToolIDs) != 0 {
+		t.Fatalf("completed LongRunningToolIDs = %#v, want empty", ev.LongRunningToolIDs)
+	}
+
+	if got := mapACPImageToPart(nil); got != nil {
+		t.Fatalf("mapACPImageToPart(nil) = %#v, want nil", got)
+	}
+	if got := mapACPAudioToPart(nil); got != nil {
+		t.Fatalf("mapACPAudioToPart(nil) = %#v, want nil", got)
+	}
+	if got := mapACPResourceLinkToPart(nil); got != nil {
+		t.Fatalf("mapACPResourceLinkToPart(nil) = %#v, want nil", got)
+	}
+	logUnsupportedACPUpdate(newLogger(nil, ""), ExtendedSessionNotification{Raw: []byte(`{"update":{"sessionUpdate":"custom"}}`)})
+	logUnsupportedACPUpdate(newLogger(nil, ""), ExtendedSessionNotification{Raw: []byte(`{"not":"update"}`)})
 }
 
 func TestMapACPUpdateToEventIgnoredAndLegacyUsage(t *testing.T) {
@@ -362,6 +415,40 @@ func TestAgentPureErrorHelpers(t *testing.T) {
 func TestAgentStateDeltaHelpers(t *testing.T) {
 	t.Parallel()
 
+	if got := buildACPState("session-1", ""); !reflect.DeepEqual(got, map[string]any{"session_id": "session-1"}) {
+		t.Fatalf("buildACPState(empty meta) = %#v, want session only", got)
+	}
+	if got := buildACPState("session-1", "{"); !reflect.DeepEqual(got, map[string]any{"session_id": "session-1"}) {
+		t.Fatalf("buildACPState(invalid meta) = %#v, want session only", got)
+	}
+	if currentACPStateMatches(nil, "session-1", "{}") {
+		t.Fatal("currentACPStateMatches(nil) = true, want false")
+	}
+
+	sessionService := session.InMemoryService()
+	created, err := sessionService.Create(context.Background(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+		State: map[string]any{
+			SessionStateKey: map[string]any{
+				"session_id": "session-1",
+				"meta":       map[string]any{"b": float64(2), "a": float64(1)},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !currentACPStateMatches(created.Session, " session-1 ", `{"a":1,"b":2}`) {
+		t.Fatal("currentACPStateMatches(equivalent meta) = false, want true")
+	}
+	if currentACPStateMatches(created.Session, "session-2", `{"a":1,"b":2}`) {
+		t.Fatal("currentACPStateMatches(different session) = true, want false")
+	}
+	if currentACPStateMatches(created.Session, "session-1", `{"a":1}`) {
+		t.Fatal("currentACPStateMatches(different meta) = true, want false")
+	}
+
 	partial := session.NewEvent(context.Background(), "inv-partial")
 	partial.Partial = true
 	(&Agent{outputKey: "out"}).persistSessionStateDelta(partial, "session-1", `{"x":1}`)
@@ -451,6 +538,27 @@ func TestTerminalPromptErrorParsing(t *testing.T) {
 func TestAgentMetadataAndTextHelpers(t *testing.T) {
 	t.Parallel()
 
+	if got := stringifyTerminalErrorCode(nil); got != "" {
+		t.Fatalf("stringifyTerminalErrorCode(nil) = %q, want empty", got)
+	}
+	if got := stringifyTerminalErrorCode(map[string]any{"one": true, "two": true}); got != "" {
+		t.Fatalf("stringifyTerminalErrorCode(multi map) = %q, want empty", got)
+	}
+	if got := stringifyTerminalErrorCode(42); got != "42" {
+		t.Fatalf("stringifyTerminalErrorCode(int) = %q, want 42", got)
+	}
+
+	if got := mapACPLegacyUsageToUsageMetadata(nil); got != nil {
+		t.Fatalf("mapACPLegacyUsageToUsageMetadata(nil) = %#v, want nil", got)
+	}
+	if got := mapACPLegacyUsageToUsageMetadata(map[string]any{"inputTokens": "bad"}); got != nil {
+		t.Fatalf("mapACPLegacyUsageToUsageMetadata(non-numeric) = %#v, want nil", got)
+	}
+	cachedOnly := mapACPLegacyUsageToUsageMetadata(map[string]any{"cachedReadTokens": float64(7)})
+	if cachedOnly == nil || cachedOnly.CachedContentTokenCount != 7 {
+		t.Fatalf("cached legacy usage = %#v, want cached count 7", cachedOnly)
+	}
+
 	if got := normalizeACPStateMetaJSON(nil); got != "{}" {
 		t.Fatalf("normalizeACPStateMetaJSON(nil) = %q, want {}", got)
 	}
@@ -488,6 +596,63 @@ func TestAgentMetadataAndTextHelpers(t *testing.T) {
 	a := &Agent{sessionModel: "model", sessionMode: "mode"}
 	a.logBoundRemoteSession(newLogger(nil, ""), "bound", "session-1", "/tmp", "{}")
 	a.logADKEvent(newLogger(nil, ""), nil, "ignored")
+
+	copyACPProviderErrorMetadata(nil, map[string]any{"provider_error": map[string]any{"message": "ignored"}})
+	emptyURI := ""
+	imageLog := logACPImageBlockValue(&acp.ContentBlockImage{MimeType: "image/png", Uri: &emptyURI})
+	if _, ok := imageLog["uri"]; ok {
+		t.Fatalf("logACPImageBlockValue(empty uri) = %#v, want no uri", imageLog)
+	}
+}
+
+func TestAgentSessionConfigErrorBranches(t *testing.T) {
+	t.Parallel()
+
+	if _, err := normalizeACPConfigCWD(acpSessionConfig{}); err == nil || !strings.Contains(err.Error(), "cwd is empty") {
+		t.Fatalf("normalizeACPConfigCWD(empty cwd) error = %v, want cwd empty", err)
+	}
+	if _, err := normalizeACPConfigCWD(acpSessionConfig{cwd: t.TempDir(), meta: map[string]any{"bad": func() {}}}); err == nil || !strings.Contains(err.Error(), "marshal acp session meta") {
+		t.Fatalf("normalizeACPConfigCWD(bad meta) error = %v, want marshal error", err)
+	}
+	if _, err := normalizeACPConfigCWD(acpSessionConfig{cwd: t.TempDir() + "/missing"}); err == nil || !strings.Contains(err.Error(), "stat acp session cwd") {
+		t.Fatalf("normalizeACPConfigCWD(missing cwd) error = %v, want stat error", err)
+	}
+	file, err := os.CreateTemp(t.TempDir(), "cwd-file-*")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("file.Close() error = %v", err)
+	}
+	if _, err := normalizeACPConfigCWD(acpSessionConfig{cwd: file.Name()}); err == nil || !strings.Contains(err.Error(), "is not a directory") {
+		t.Fatalf("normalizeACPConfigCWD(file cwd) error = %v, want not directory", err)
+	}
+
+	if _, err := addInstructionMetaToSessionConfig(acpSessionConfig{
+		meta: map[string]any{"codex": 1},
+	}, resolvedInstructionParts{instruction: "dev"}); err == nil || !strings.Contains(err.Error(), "codex must be an object") {
+		t.Fatalf("addInstructionMetaToSessionConfig(bad codex) error = %v, want codex object error", err)
+	}
+	if _, err := addInstructionMetaToSessionConfig(acpSessionConfig{
+		meta: map[string]any{"bad": func() {}},
+	}, resolvedInstructionParts{instruction: "dev"}); err == nil || !strings.Contains(err.Error(), "marshal acp session meta") {
+		t.Fatalf("addInstructionMetaToSessionConfig(bad meta) error = %v, want marshal error", err)
+	}
+	if _, err := addReasoningEffortToSessionConfig(acpSessionConfig{
+		meta: map[string]any{"codex": 1},
+	}, "high"); err == nil || !strings.Contains(err.Error(), "codex must be an object") {
+		t.Fatalf("addReasoningEffortToSessionConfig(bad codex) error = %v, want codex object error", err)
+	}
+	if _, err := addReasoningEffortToSessionConfig(acpSessionConfig{
+		meta: map[string]any{"codex": map[string]any{"config": 1}},
+	}, "high"); err == nil || !strings.Contains(err.Error(), "codex.config must be an object") {
+		t.Fatalf("addReasoningEffortToSessionConfig(bad config) error = %v, want config object error", err)
+	}
+	if _, err := addReasoningEffortToSessionConfig(acpSessionConfig{
+		meta: map[string]any{"bad": func() {}},
+	}, "high"); err == nil || !strings.Contains(err.Error(), "marshal acp session meta") {
+		t.Fatalf("addReasoningEffortToSessionConfig(bad meta) error = %v, want marshal error", err)
+	}
 }
 
 func TestAgentConfigConversionHelpers(t *testing.T) {
