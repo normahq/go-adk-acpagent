@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"iter"
 	"os"
 	"reflect"
 	"strings"
@@ -488,6 +490,18 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	if !reflect.DeepEqual(liveACPState, wantLiveACPState) {
 		t.Fatalf("live acp state = %#v, want %#v", liveACPState, wantLiveACPState)
 	}
+	setErr := errors.New("set failed")
+	matchingState := map[string]any{"session_id": "session-1"}
+	if err := agentForState.persistRemoteSessionBinding(testInvocationContext{session: testStateSession{
+		state: testState{values: map[string]any{SessionStateKey: matchingState}, setErr: setErr},
+	}}, "session-1", "{}", "model"); err == nil || !strings.Contains(err.Error(), "set live acp session state") {
+		t.Fatalf("persistRemoteSessionBinding(matching set error) error = %v, want wrapped set error", err)
+	}
+	if err := agentForState.persistRemoteSessionBinding(testInvocationContext{session: testStateSession{
+		state: testState{getErr: session.ErrStateKeyNotExist, setErr: setErr},
+	}}, "session-1", "{}", "model"); err == nil || !strings.Contains(err.Error(), "set live acp session state") {
+		t.Fatalf("persistRemoteSessionBinding(new set error) error = %v, want wrapped set error", err)
+	}
 
 	(&Agent{outputKey: "out"}).persistSessionStateDelta(nil, "session-1", "{}", "")
 	(&Agent{outputKey: "out"}).maybeSaveOutputToState(nil, "text")
@@ -803,6 +817,11 @@ func TestAgentSessionConfigErrorBranches(t *testing.T) {
 		!strings.Contains(err.Error(), "model_config_id must be a string") {
 		t.Fatalf("resolveSessionConfig(bad model_config_id) error = %v, want model_config_id string error", err)
 	}
+	if _, err := (&Agent{workingDir: t.TempDir()}).resolveSessionConfig(testInvocationContext{session: testStateSession{
+		state: testState{getErr: errors.New("read failed")},
+	}}); err == nil || !strings.Contains(err.Error(), "read \"cwd\"") {
+		t.Fatalf("resolveSessionConfig(read cwd error) error = %v, want read cwd error", err)
+	}
 
 	resolveConfigErrorCases := []struct {
 		name    string
@@ -956,4 +975,44 @@ func (c testInvocationContext) Ended() bool {
 func (c testInvocationContext) WithContext(ctx context.Context) adkagent.InvocationContext {
 	c.Context = ctx
 	return c
+}
+
+type testStateSession struct {
+	session.Session
+	state session.State
+}
+
+func (s testStateSession) State() session.State {
+	return s.state
+}
+
+type testState struct {
+	values map[string]any
+	getErr error
+	setErr error
+}
+
+func (s testState) Get(key string) (any, error) {
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	value, ok := s.values[key]
+	if !ok {
+		return nil, session.ErrStateKeyNotExist
+	}
+	return value, nil
+}
+
+func (s testState) Set(string, any) error {
+	return s.setErr
+}
+
+func (s testState) All() iter.Seq2[string, any] {
+	return func(yield func(string, any) bool) {
+		for key, value := range s.values {
+			if !yield(key, value) {
+				return
+			}
+		}
+	}
 }
