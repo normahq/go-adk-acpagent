@@ -3,6 +3,7 @@ package acpagent
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -249,6 +250,29 @@ func TestClientActiveSessionHelpers(t *testing.T) {
 	}
 }
 
+func TestClientClearActiveAfterDispatchClosed(t *testing.T) {
+	t.Parallel()
+
+	sessionID := acp.SessionId("session-1")
+	active := &activePrompt{updates: make(chan ExtendedSessionNotification)}
+	closed := make(chan struct{})
+	close(closed)
+	dispatchDone := make(chan struct{})
+	close(dispatchDone)
+	client := &Client{
+		activeBySession: map[acp.SessionId]*activePrompt{sessionID: active},
+		closed:          closed,
+		dispatchDone:    dispatchDone,
+	}
+	client.clearActive(sessionID)
+	if _, ok := client.activeBySession[sessionID]; ok {
+		t.Fatal("active session still present after clearActive")
+	}
+	if _, ok := <-active.updates; ok {
+		t.Fatal("active updates channel open after clearActive")
+	}
+}
+
 func TestClientCloseAllActiveSessions(t *testing.T) {
 	t.Parallel()
 
@@ -350,3 +374,78 @@ func TestClientQueueAndMarshalHelpers(t *testing.T) {
 		t.Fatalf("mustMarshalJSON(unmarshalable) = %q, want nil", got)
 	}
 }
+
+func TestClientLoggingAndCloseHelpers(t *testing.T) {
+	t.Parallel()
+
+	if !suppressLastChunkLogFromContext(context.WithValue(context.Background(), suppressLastChunkLogContextKey, true)) {
+		t.Fatal("suppressLastChunkLogFromContext(true) = false, want true")
+	}
+	var nilCtx context.Context
+	if suppressLastChunkLogFromContext(nilCtx) || suppressLastChunkLogFromContext(context.Background()) {
+		t.Fatal("suppressLastChunkLogFromContext returned true for nil/plain context")
+	}
+	if got := renderACPContentBlocks(nil); got != "" {
+		t.Fatalf("renderACPContentBlocks(nil) = %q, want empty", got)
+	}
+	if got := renderACPContentBlocks([]acp.ContentBlock{acp.TextBlock("  hi  "), acp.ContentBlock{}}); got != "hi" {
+		t.Fatalf("renderACPContentBlocks() = %q, want hi", got)
+	}
+
+	client := &Client{closeErr: io.EOF}
+	if err := client.finalizeCloseErr(); err != nil {
+		t.Fatalf("finalizeCloseErr(io.EOF) error = %v, want nil", err)
+	}
+	client.closeErr = errors.New("boom")
+	if err := client.finalizeCloseErr(); err == nil || !strings.Contains(err.Error(), "acp client close") {
+		t.Fatalf("finalizeCloseErr(boom) error = %v, want wrapped close error", err)
+	}
+
+	event := newLogger(nil, "").Debug()
+	logACPUpdateContentFields(nil, acp.UpdateAgentMessageText("ignored"))
+	logACPUpdateChunkFields(nil, acp.UpdateAgentMessageText("ignored"))
+	logACPUpdateContentFields(event, acp.UpdateUserMessageText("user"))
+	logACPUpdateContentFields(event, acp.UpdateAgentThoughtText("thought"))
+	logACPUpdateChunkFields(event, acp.UpdateUserMessageText("user"))
+	logACPUpdateChunkFields(event, acp.UpdateAgentThoughtText("thought"))
+
+	if got := (logger{}).slog(); got == nil {
+		t.Fatal("logger{}.slog() = nil, want discard logger")
+	}
+	(&logEvent{}).Msg("ignored")
+}
+
+func TestCloseClientAfterError(t *testing.T) {
+	t.Parallel()
+
+	closed := make(chan struct{})
+	close(closed)
+	client := &Client{
+		stdin:        testWriteCloser{},
+		closed:       closed,
+		logger:       newLogger(nil, ""),
+		dispatchDone: make(chan struct{}),
+	}
+	baseErr := errors.New("initialize failed")
+	if err := closeClientAfterError(client, baseErr, "close failed"); !errors.Is(err, baseErr) {
+		t.Fatalf("closeClientAfterError(clean close) error = %v, want base error", err)
+	}
+
+	client = &Client{
+		stdin:        testWriteCloser{},
+		closed:       closed,
+		closeErr:     errors.New("wait failed"),
+		logger:       newLogger(nil, ""),
+		dispatchDone: make(chan struct{}),
+	}
+	err := closeClientAfterError(client, baseErr, "close failed")
+	if !errors.Is(err, baseErr) || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("closeClientAfterError(close error) = %v, want joined base and close errors", err)
+	}
+}
+
+type testWriteCloser struct{}
+
+func (testWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+
+func (testWriteCloser) Close() error { return nil }

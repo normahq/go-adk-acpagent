@@ -3,6 +3,7 @@ package acpagent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -382,4 +383,88 @@ func TestAgentUpdateLoggingHelpers(t *testing.T) {
 	if got := extendedSessionUpdateType(ExtendedSessionNotification{Raw: []byte(`{`)}); got != unknownValue {
 		t.Fatalf("extendedSessionUpdateType(invalid) = %q, want %q", got, unknownValue)
 	}
+}
+
+func TestTerminalPromptErrorParsing(t *testing.T) {
+	t.Parallel()
+
+	if got, ok := terminalPromptErrorFromNotification(ExtendedSessionNotification{Method: "session/update"}); ok || got != nil {
+		t.Fatalf("terminalPromptErrorFromNotification(non-error) = (%#v, %v), want nil false", got, ok)
+	}
+	if got, ok := parsePromptErrorNotification(json.RawMessage(`{`)); ok || got != nil {
+		t.Fatalf("parsePromptErrorNotification(invalid) = (%#v, %v), want nil false", got, ok)
+	}
+	if got, ok := parsePromptErrorNotification(json.RawMessage(`{"willRetry":true,"error":{"message":"retrying"}}`)); ok || got != nil {
+		t.Fatalf("parsePromptErrorNotification(retry) = (%#v, %v), want nil false", got, ok)
+	}
+	promptErr, ok := parsePromptErrorNotification(json.RawMessage(`{"error":{"additionalDetails":"quota details","codexErrorInfo":{"quota_exceeded":{}}}}`))
+	if !ok {
+		t.Fatal("parsePromptErrorNotification(additional details) ok = false, want true")
+	}
+	if promptErr.Message != "quota details" || promptErr.Code != "quota_exceeded" {
+		t.Fatalf("prompt error = %#v, want quota details/quota_exceeded", promptErr)
+	}
+
+	if got, ok := parseTurnCompletedTerminalError(json.RawMessage(`{`)); ok || got != nil {
+		t.Fatalf("parseTurnCompletedTerminalError(invalid) = (%#v, %v), want nil false", got, ok)
+	}
+	if got, ok := parseTurnCompletedTerminalError(json.RawMessage(`{"turn":{"status":"completed","error":{"message":"ignored"}}}`)); ok || got != nil {
+		t.Fatalf("parseTurnCompletedTerminalError(completed) = (%#v, %v), want nil false", got, ok)
+	}
+	turnErr, ok := parseTurnCompletedTerminalError(json.RawMessage(`{"turn":{"status":"FAILED","error":{"message":"bad","codexErrorInfo":"rate_limit"}}}`))
+	if !ok {
+		t.Fatal("parseTurnCompletedTerminalError(failed) ok = false, want true")
+	}
+	if turnErr.Message != "bad" || turnErr.Code != "rate_limit" {
+		t.Fatalf("turn error = %#v, want bad/rate_limit", turnErr)
+	}
+	if got, ok := newTerminalPromptError("", nil, ""); ok || got != nil {
+		t.Fatalf("newTerminalPromptError(empty) = (%#v, %v), want nil false", got, ok)
+	}
+	defaultErr, ok := newTerminalPromptError("failed", nil, "")
+	if !ok || defaultErr.Code != "provider_error" {
+		t.Fatalf("newTerminalPromptError(default) = (%#v, %v), want provider_error true", defaultErr, ok)
+	}
+}
+
+func TestAgentMetadataAndTextHelpers(t *testing.T) {
+	t.Parallel()
+
+	if got := normalizeACPStateMetaJSON(nil); got != "{}" {
+		t.Fatalf("normalizeACPStateMetaJSON(nil) = %q, want {}", got)
+	}
+	if got := normalizeACPStateMetaJSON(map[string]any{"bad": func() {}}); got != "{}" {
+		t.Fatalf("normalizeACPStateMetaJSON(unmarshalable) = %q, want {}", got)
+	}
+	if got := normalizeACPStateMetaJSONFromRaw(" "); got != "{}" {
+		t.Fatalf("normalizeACPStateMetaJSONFromRaw(blank) = %q, want {}", got)
+	}
+	if got := normalizeACPStateMetaJSONFromRaw("{"); got != "{}" {
+		t.Fatalf("normalizeACPStateMetaJSONFromRaw(invalid) = %q, want {}", got)
+	}
+	if !isNonEmptyMetaValue(1) || isNonEmptyMetaValue(nil) || isNonEmptyMetaValue(" \t ") || !isNonEmptyMetaValue("x") {
+		t.Fatal("isNonEmptyMetaValue returned unexpected results")
+	}
+	if isIdentifier("1bad") || isIdentifier("bad-name") || !isIdentifier("_good1") {
+		t.Fatal("isIdentifier returned unexpected results")
+	}
+
+	content := genai.NewContentFromParts([]*genai.Part{
+		nil,
+		genai.NewPartFromText("visible"),
+		&genai.Part{Text: "thought", Thought: true},
+	}, genai.RoleModel)
+	if got := extractPromptText(content); got != "visiblethought" {
+		t.Fatalf("extractPromptText() = %q, want visiblethought", got)
+	}
+	if got := contentVisibleText(content); got != "visible" {
+		t.Fatalf("contentVisibleText() = %q, want visible", got)
+	}
+	if got := contentVisibleText(nil); got != "" {
+		t.Fatalf("contentVisibleText(nil) = %q, want empty", got)
+	}
+
+	a := &Agent{sessionModel: "model", sessionMode: "mode"}
+	a.logBoundRemoteSession(newLogger(nil, ""), "bound", "session-1", "/tmp", "{}")
+	a.logADKEvent(newLogger(nil, ""), nil, "ignored")
 }
