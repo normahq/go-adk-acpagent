@@ -288,6 +288,14 @@ func TestResolveModelConfigID(t *testing.T) {
 			want: "model",
 		},
 		{
+			name: "skips nil option before id fallback",
+			options: []acp.SessionConfigOption{
+				{},
+				{Select: &acp.SessionConfigOptionSelect{Id: "model"}},
+			},
+			want: "model",
+		},
+		{
 			name: "skips empty category id",
 			options: []acp.SessionConfigOption{
 				{

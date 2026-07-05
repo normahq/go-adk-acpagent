@@ -19,6 +19,17 @@ import (
 func TestMapACPUserAndThoughtChunks(t *testing.T) {
 	t.Parallel()
 
+	if ev, ok := mapACPUpdateToEvent(context.Background(), newLogger(nil, ""), "inv-dispatch-user", ExtendedSessionNotification{
+		SessionNotification: acp.SessionNotification{Update: acp.UpdateUserMessageText("user text")},
+	}); !ok || ev == nil || ev.Content.Role != genai.RoleUser {
+		t.Fatalf("mapACPUpdateToEvent(user) = (%#v, %v), want user event true", ev, ok)
+	}
+	if ev, ok := mapACPUpdateToEvent(context.Background(), newLogger(nil, ""), "inv-dispatch-thought", ExtendedSessionNotification{
+		SessionNotification: acp.SessionNotification{Update: acp.UpdateAgentThoughtText("thinking")},
+	}); !ok || ev == nil || ev.Content.Role != genai.RoleModel || !ev.Content.Parts[0].Thought {
+		t.Fatalf("mapACPUpdateToEvent(thought) = (%#v, %v), want thought event true", ev, ok)
+	}
+
 	userEv, ok := mapACPUserMessageChunk(context.Background(), newLogger(nil, ""), "inv-user", &acp.SessionUpdateUserMessageChunk{
 		Content: acp.TextBlock("user text"),
 	})
@@ -519,6 +530,16 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	if !reflect.DeepEqual(evWithModel.Actions.StateDelta[SessionStateKey], wantACPStateWithModel) {
 		t.Fatalf("model acp StateDelta = %#v, want %#v", evWithModel.Actions.StateDelta[SessionStateKey], wantACPStateWithModel)
 	}
+
+	zeroEvent := &session.Event{}
+	agent.persistSessionStateDelta(zeroEvent, "session-2", "{}", "")
+	agent.maybeSaveOutputToState(zeroEvent, "saved")
+	if got := zeroEvent.Actions.StateDelta[SessionStateKey]; !reflect.DeepEqual(got, map[string]any{"session_id": "session-2"}) {
+		t.Fatalf("zero event acp StateDelta = %#v, want session-2", got)
+	}
+	if got := zeroEvent.Actions.StateDelta["out"]; got != "saved" {
+		t.Fatalf("zero event output StateDelta = %#v, want saved", got)
+	}
 }
 
 func TestAgentUpdateLoggingHelpers(t *testing.T) {
@@ -595,6 +616,9 @@ func TestAgentMetadataAndTextHelpers(t *testing.T) {
 	if got := stringifyTerminalErrorCode(map[string]any{"one": true, "two": true}); got != "" {
 		t.Fatalf("stringifyTerminalErrorCode(multi map) = %q, want empty", got)
 	}
+	if got := stringifyTerminalErrorCode(map[string]any{"quota_exceeded": true}); got != "quota_exceeded" {
+		t.Fatalf("stringifyTerminalErrorCode(single map) = %q, want quota_exceeded", got)
+	}
 	if got := stringifyTerminalErrorCode(42); got != "42" {
 		t.Fatalf("stringifyTerminalErrorCode(int) = %q, want 42", got)
 	}
@@ -628,6 +652,9 @@ func TestAgentMetadataAndTextHelpers(t *testing.T) {
 	if isIdentifier("1bad") || isIdentifier("bad-name") || !isIdentifier("_good1") {
 		t.Fatal("isIdentifier returned unexpected results")
 	}
+	if isIdentifier("") {
+		t.Fatal("isIdentifier(empty) = true, want false")
+	}
 
 	content := genai.NewContentFromParts([]*genai.Part{
 		nil,
@@ -644,6 +671,24 @@ func TestAgentMetadataAndTextHelpers(t *testing.T) {
 		t.Fatalf("contentVisibleText(nil) = %q, want empty", got)
 	}
 
+	sessionService := session.InMemoryService()
+	templateSession, err := sessionService.Create(context.Background(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+		State:   map[string]any{"nullable": nil},
+	})
+	if err != nil {
+		t.Fatalf("Create(template session) error = %v", err)
+	}
+	templateCtx := testInvocationContext{session: templateSession.Session}
+	if got, err := replaceTemplateMatch(templateCtx, "{{ nullable }}"); err != nil || got != "" {
+		t.Fatalf("replaceTemplateMatch(nil state) = (%q, %v), want empty nil", got, err)
+	}
+	if got, err := replaceTemplateMatch(templateCtx, "{{ artifact.missing }}"); err == nil || got != "" ||
+		!strings.Contains(err.Error(), "artifact service is not initialized") {
+		t.Fatalf("replaceTemplateMatch(missing artifact service) = (%q, %v), want artifact service error", got, err)
+	}
+
 	a := &Agent{sessionModel: "model", sessionMode: "mode"}
 	a.logBoundRemoteSession(newLogger(nil, ""), "bound", "session-1", "/tmp", "{}")
 	a.logADKEvent(newLogger(nil, ""), nil, "ignored")
@@ -653,6 +698,11 @@ func TestAgentMetadataAndTextHelpers(t *testing.T) {
 	imageLog := logACPImageBlockValue(&acp.ContentBlockImage{MimeType: "image/png", Uri: &emptyURI})
 	if _, ok := imageLog["uri"]; ok {
 		t.Fatalf("logACPImageBlockValue(empty uri) = %#v, want no uri", imageLog)
+	}
+	uri := "file:///tmp/image.png"
+	imageLog = logACPImageBlockValue(&acp.ContentBlockImage{Data: "abc", Uri: &uri})
+	if imageLog["uri"] != uri || imageLog["data_len"] != 3 {
+		t.Fatalf("logACPImageBlockValue(uri data) = %#v, want uri and data_len", imageLog)
 	}
 }
 
@@ -836,6 +886,20 @@ func TestAgentConfigConversionHelpers(t *testing.T) {
 	}
 	if got := headersToHttpHeaders(nil); len(got) != 0 {
 		t.Fatalf("headersToHttpHeaders(nil) length = %d, want 0", len(got))
+	}
+
+	stdio, err := convertMCPServers(map[string]MCPServerConfig{
+		"stdio": {
+			Type: MCPServerTypeStdio,
+			Cmd:  []string{"server"},
+			Args: []string{"--flag"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("convertMCPServers(stdio args) error = %v", err)
+	}
+	if len(stdio) != 1 || stdio[0].Stdio == nil || !reflect.DeepEqual(stdio[0].Stdio.Args, []string{"--flag"}) {
+		t.Fatalf("convertMCPServers(stdio args) = %#v, want args fallback", stdio)
 	}
 
 	if _, err := convertMCPServers(map[string]MCPServerConfig{"bad": {Type: MCPServerTypeStdio}}); err == nil {

@@ -359,6 +359,11 @@ func TestIsACPSessionNotFoundError(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "plain error",
+			err:  errors.New("not found"),
+			want: false,
+		},
+		{
 			name: "wrapped invalid thread id data",
 			err: &acp.RequestError{
 				Code:    -32603,
@@ -392,6 +397,10 @@ func TestIsACPSessionNotFoundError(t *testing.T) {
 }
 
 func TestIsACPSessionAlreadyExistsError(t *testing.T) {
+	if isACPSessionAlreadyExistsError(errors.New("already exists")) {
+		t.Fatal("isACPSessionAlreadyExistsError(plain error) = true, want false")
+	}
+
 	err := &acp.RequestError{
 		Code:    -32602,
 		Message: "Invalid params",
