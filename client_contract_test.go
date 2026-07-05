@@ -175,8 +175,10 @@ func TestClientUnsupportedCallbacksReturnMethodNotFound(t *testing.T) {
 func TestRequestPermissionFallbacks(t *testing.T) {
 	t.Parallel()
 
+	title := "Run shell"
 	rejectResp, err := (&Client{logger: newLogger(nil, "")}).RequestPermission(context.Background(), acp.RequestPermissionRequest{
 		SessionId: "session-1",
+		ToolCall:  acp.ToolCallUpdate{Title: &title},
 		Options: []acp.PermissionOption{
 			{OptionId: "allow", Kind: acp.PermissionOptionKindAllowOnce},
 			{OptionId: "reject", Kind: acp.PermissionOptionKindRejectOnce},
@@ -202,6 +204,17 @@ func TestRequestPermissionFallbacks(t *testing.T) {
 
 	if got := permissionOutcomeLabel(acp.RequestPermissionOutcome{}); got != unknownValue {
 		t.Fatalf("permissionOutcomeLabel(empty) = %q, want %q", got, unknownValue)
+	}
+
+	wantErr := errors.New("deny failed")
+	_, err = (&Client{
+		logger: newLogger(nil, ""),
+		permissionHandler: func(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+			return acp.RequestPermissionResponse{}, wantErr
+		},
+	}).RequestPermission(context.Background(), acp.RequestPermissionRequest{SessionId: "session-1"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("RequestPermission(handler error) error = %v, want %v", err, wantErr)
 	}
 }
 
@@ -579,6 +592,18 @@ func TestAgentCloseWrapsClientError(t *testing.T) {
 func TestRequestErrorAndEncodingHelpers(t *testing.T) {
 	t.Parallel()
 
+	if got := acpRequestErrorDataString(nil); got != "" {
+		t.Fatalf("acpRequestErrorDataString(nil) = %q, want empty", got)
+	}
+	if got := acpRequestErrorDataString("text"); got != "text" {
+		t.Fatalf("acpRequestErrorDataString(string) = %q, want text", got)
+	}
+	if got := acpRequestErrorDataString([]byte("bytes")); got != "bytes" {
+		t.Fatalf("acpRequestErrorDataString(bytes) = %q, want bytes", got)
+	}
+	if got := acpRequestErrorDataString(map[string]any{"x": 1}); got != `{"x":1}` {
+		t.Fatalf("acpRequestErrorDataString(map) = %q, want JSON", got)
+	}
 	if got := acpRequestErrorDataString(map[string]any{"bad": func() {}}); !strings.Contains(got, "map[bad:") {
 		t.Fatalf("acpRequestErrorDataString(unmarshalable) = %q, want fmt fallback", got)
 	}
