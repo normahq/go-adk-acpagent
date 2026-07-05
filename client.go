@@ -76,7 +76,7 @@ type ExtendedSessionNotification struct {
 	Method string
 }
 
-// Client manages a single Agentic Computing Protocol (ACP) subprocess and its
+// Client manages a single Agent Client Protocol (ACP) subprocess and its
 // communication over standard input/output. It implements the acp.Client interface
 // to handle protocol-level callbacks and manages multiple concurrent prompt sessions.
 type Client struct {

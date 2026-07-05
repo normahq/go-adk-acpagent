@@ -4,7 +4,7 @@
 command you run.
 
 Each recipe below shows the `Config.Command` shape used to start the ACP stdio
-runtime. Add `Model`, `Mode`, `ReasoningEffort`, `MCPServers`, `Logger`, and
+agent. Add `Model`, `Mode`, `ReasoningEffort`, `MCPServers`, `Logger`, and
 `Stderr` as needed for your application.
 
 ## Codex
@@ -22,7 +22,7 @@ agentRuntime, err := acpagent.New(acpagent.Config{
 })
 ```
 
-Use `ReasoningEffort` for Codex runtimes that support Codex reasoning metadata.
+Use `ReasoningEffort` for Codex ACP agents that support Codex reasoning metadata.
 The adapter sends reasoning effort through `session/new._meta.codex.config`.
 
 ## OpenCode
@@ -40,7 +40,7 @@ agentRuntime, err := acpagent.New(acpagent.Config{
 ```
 
 OpenCode supports ACP directly through `opencode acp`. Use the model and mode
-identifiers exposed by your installed OpenCode runtime.
+identifiers exposed by your installed OpenCode ACP agent.
 
 ## Claude Code
 
@@ -61,7 +61,8 @@ version pinned in production if reproducibility matters.
 ## PI
 
 No concrete PI ACP command is defined in the old Norma runtime configuration.
-Treat PI as a generic ACP runtime until the command is standardized:
+Treat PI as a generic ACP-compatible coding agent until the command is
+standardized:
 
 ```go
 agentRuntime, err := acpagent.New(acpagent.Config{
@@ -95,7 +96,7 @@ do not corrupt the JSON-RPC stream.
 
 ## MCP Servers
 
-ACP runtimes that accept MCP server definitions can receive them through
+ACP agents that accept MCP server definitions can receive them through
 `Config.MCPServers`:
 
 ```go

@@ -16,7 +16,7 @@ For production services, route stderr to your application log pipeline or use
 
 ## JSON-RPC Stream Looks Corrupted
 
-ACP runtimes must write protocol messages to stdout and logs to stderr. If a
+ACP agents must write protocol messages to stdout and logs to stderr. If a
 provider writes logs to stdout, it can corrupt the JSON-RPC stream. Use the
 provider's quiet/stdio mode or wrap it with a script that keeps logs on stderr.
 
@@ -27,16 +27,16 @@ provider's quiet/stdio mode or wrap it with a script that keeps logs on stderr.
 
 If model selection fails:
 
-- confirm the ACP runtime returns model config options from `session/new` or
+- confirm the ACP agent returns model config options from `session/new` or
   `session/resume`
-- set `Config.ModelConfigID` when the runtime uses a nonstandard option ID
+- set `Config.ModelConfigID` when the agent uses a nonstandard option ID
 - inspect logs with `Config.Logger`
 - forward stderr while debugging provider startup and capability negotiation
 
 ## Mode Selection Fails
 
 `Config.Mode` uses ACP `session/set_mode`. Use only mode IDs reported by the ACP
-runtime. If the runtime does not support modes, leave `Config.Mode` empty.
+agent. If the agent does not support modes, leave `Config.Mode` empty.
 
 ## Permission Requests Do Nothing
 
@@ -66,9 +66,9 @@ providerErr, ok := acperror.FromADKMetadata(event.CustomMetadata)
 Known kinds include quota, authentication, payment, rate limit, unavailable,
 invalid request, and unknown.
 
-## Inspecting ACP Runtimes
+## Inspecting ACP Agents
 
-Norma includes useful standalone tools for ACP runtime inspection:
+Norma includes useful standalone tools for ACP agent inspection:
 
 ```sh
 acp-dump -- opencode acp

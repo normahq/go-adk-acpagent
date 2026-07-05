@@ -27,7 +27,7 @@ On first use, the adapter creates an ACP session and writes
 `SessionStateKey.session_id` into the live ADK session state. Later invocations
 in the same ADK session reuse that ID.
 
-If the ACP runtime supports `session/resume`, the adapter uses the stored ACP
+If the ACP agent supports `session/resume`, the adapter uses the stored ACP
 session ID to resume after recoverable prompt failures. If the stored ACP
 session is stale, the adapter creates a new ACP session and updates the ADK
 state.

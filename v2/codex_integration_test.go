@@ -72,7 +72,7 @@ func TestCodexACPIntegration_ResumeSessionRoundTrip(t *testing.T) {
 
 	initResp := mustInitializeCodexACP(t, client, stderr)
 	if initResp.AgentCapabilities.SessionCapabilities.Resume == nil {
-		t.Skip("codex ACP runtime does not advertise session/resume capability")
+		t.Skip("codex ACP agent does not advertise session/resume capability")
 	}
 
 	sess := mustNewCodexACPSession(t, client, stderr, workingDir)

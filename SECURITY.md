@@ -6,7 +6,7 @@ Please report security issues privately by opening a GitHub security advisory fo
 this repository.
 
 Do not open public issues for vulnerabilities. Include the affected version,
-impact, reproduction steps, and any relevant ACP runtime details.
+impact, reproduction steps, and any relevant ACP agent details.
 
 ## Supported Versions
 

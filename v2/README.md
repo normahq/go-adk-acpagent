@@ -8,9 +8,12 @@
 [![License](https://img.shields.io/github/license/normahq/go-adk-acpagent)](../LICENSE)
 [![Version](https://img.shields.io/github/v/tag/normahq/go-adk-acpagent?label=version)](https://github.com/normahq/go-adk-acpagent/tags)
 
-`go-adk-acpagent` adapts Agentic Computing Protocol (ACP) runtimes to the Google ADK `agent.Agent` interface.
+`go-adk-acpagent` provides a Google ADK agent implementation backed by an
+Agent Client Protocol (ACP) coding agent.
 
-It lets ADK applications use ACP-compatible coding agents without taking a
+It starts an ACP-compatible coding-agent subprocess, talks to it as an ACP
+client over stdio, maps ADK sessions to ACP sessions, and maps ACP updates back
+to ADK events. ADK applications can use ACP coding agents without taking a
 dependency on Norma's PDCA, swarm, Beads, or profile layers.
 
 ## Install
@@ -144,7 +147,7 @@ GOBIN="$PWD/.bin" go -C tools install golang.org/x/vuln/cmd/govulncheck
 (cd v2 && ../.bin/govulncheck ./...)
 ```
 
-Optional integration tests require the matching ACP runtime binaries and build tags:
+Optional integration tests require the matching ACP agent binaries and build tags:
 
 ```sh
 go test -tags 'integration codex' ./...

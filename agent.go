@@ -99,8 +99,9 @@ type Config struct {
 	OutputKey string
 }
 
-// Agent adapts an Agentic Computing Protocol (ACP) runtime to the ADK agent interface.
-// It manages the lifecycle of an ACP subprocess and maps ACP sessions to ADK sessions.
+// Agent is an ADK agent implementation backed by an Agent Client Protocol (ACP)
+// coding-agent subprocess.
+// It manages the subprocess lifecycle and maps ACP sessions to ADK sessions.
 type Agent struct {
 	adkagent.Agent
 
@@ -166,7 +167,7 @@ func (r resolvedInstructionParts) combined() string {
 
 const (
 	defaultAgentName        = "ACPAgent"
-	defaultAgentDescription = "ACP runtime exposed through ADK"
+	defaultAgentDescription = "ACP coding agent exposed through ADK"
 
 	acpTypeText       = "text"
 	acpTypeImage      = "image"
@@ -183,7 +184,7 @@ const (
 	// The value at this key must be an object with optional fields:
 	//   - "meta" (object): forwarded to ACP session/new._meta
 	//   - "session_id" (string): canonical ACP session id returned by the ACP
-	//     runtime and used for ACP session/resume
+	//     agent and used for ACP session/resume
 	//
 	// This state is the source of truth for ACP session identity. If the ADK
 	// session is deleted, this state is deleted with it and no in-memory ACP

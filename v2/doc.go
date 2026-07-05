@@ -1,9 +1,10 @@
-// Package acpagent adapts Agentic Computing Protocol (ACP) runtimes to the
-// Google ADK [agent.Agent] interface.
+// Package acpagent provides a Google ADK agent implementation backed by an
+// Agent Client Protocol (ACP) coding agent.
 //
-// The package starts an ACP-compatible subprocess and maps each ADK session to
-// a remote ACP session. By default, ACP session creation uses
-// [Config.WorkingDir] as the ACP session cwd.
+// The package starts an ACP-compatible coding-agent subprocess, talks to it as
+// an ACP client over stdio, and maps each ADK session to a remote ACP session.
+// By default, ACP session creation uses [Config.WorkingDir] as the ACP session
+// cwd.
 //
 // # Per-session overrides via ADK state
 //
@@ -36,7 +37,7 @@
 //   - As soon as the adapter binds a remote ACP session, it stores the
 //     canonical ACP session ID in the live ADK session state under
 //     `state[SessionStateKey]`.
-//   - If `state[SessionStateKey].session_id` is absent, the runtime creates a
+//   - If `state[SessionStateKey].session_id` is absent, the package creates a
 //     new ACP session.
 //   - For newly created ACP sessions, resolved startup instructions are passed
 //     through two channels: `session/new._meta.codex` receives
