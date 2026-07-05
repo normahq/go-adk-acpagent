@@ -287,6 +287,20 @@ func TestResolveModelConfigID(t *testing.T) {
 			}},
 			want: "model",
 		},
+		{
+			name: "skips empty category id",
+			options: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category: &modelCategory,
+					},
+				},
+				{
+					Select: &acp.SessionConfigOptionSelect{Id: "model"},
+				},
+			},
+			want: "model",
+		},
 		{name: "missing", wantErr: true},
 	}
 

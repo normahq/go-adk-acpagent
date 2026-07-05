@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	acp "github.com/coder/acp-go-sdk"
+	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
@@ -489,6 +490,13 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	if got := ev.Actions.StateDelta["out"]; got != "visible" {
 		t.Fatalf("output StateDelta = %#v, want visible", got)
 	}
+
+	evWithModel := session.NewEvent(context.Background(), "inv-model")
+	agent.persistSessionStateDelta(evWithModel, "session-1", "{}", "model")
+	wantACPStateWithModel := map[string]any{"session_id": "session-1", "model_config_id": "model"}
+	if !reflect.DeepEqual(evWithModel.Actions.StateDelta[SessionStateKey], wantACPStateWithModel) {
+		t.Fatalf("model acp StateDelta = %#v, want %#v", evWithModel.Actions.StateDelta[SessionStateKey], wantACPStateWithModel)
+	}
 }
 
 func TestAgentUpdateLoggingHelpers(t *testing.T) {
@@ -674,6 +682,55 @@ func TestAgentSessionConfigErrorBranches(t *testing.T) {
 	}, "high"); err == nil || !strings.Contains(err.Error(), "marshal acp session meta") {
 		t.Fatalf("addReasoningEffortToSessionConfig(bad meta) error = %v, want marshal error", err)
 	}
+
+	sessionService := session.InMemoryService()
+	created, err := sessionService.Create(context.Background(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+		State: map[string]any{
+			SessionStateKey: map[string]any{
+				"session_id":      "session-1",
+				"model_config_id": "state-model",
+				"meta":            map[string]any{"x": float64(1)},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	configuredModel, err := (&Agent{
+		workingDir:           t.TempDir(),
+		sessionModelConfigID: "configured-model",
+	}).resolveSessionConfig(testInvocationContext{session: created.Session})
+	if err != nil {
+		t.Fatalf("resolveSessionConfig(configured model) error = %v", err)
+	}
+	if configuredModel.modelConfigID != "configured-model" {
+		t.Fatalf("resolveSessionConfig(configured model) modelConfigID = %q, want configured-model", configuredModel.modelConfigID)
+	}
+
+	stateModel, err := (&Agent{workingDir: t.TempDir()}).resolveSessionConfig(testInvocationContext{session: created.Session})
+	if err != nil {
+		t.Fatalf("resolveSessionConfig(state model) error = %v", err)
+	}
+	if stateModel.modelConfigID != "state-model" {
+		t.Fatalf("resolveSessionConfig(state model) modelConfigID = %q, want state-model", stateModel.modelConfigID)
+	}
+
+	badState, err := sessionService.Create(context.Background(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+		State: map[string]any{
+			SessionStateKey: map[string]any{"model_config_id": 123},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(bad state) error = %v", err)
+	}
+	if _, err := (&Agent{workingDir: t.TempDir()}).resolveSessionConfig(testInvocationContext{session: badState.Session}); err == nil ||
+		!strings.Contains(err.Error(), "model_config_id must be a string") {
+		t.Fatalf("resolveSessionConfig(bad model_config_id) error = %v, want model_config_id string error", err)
+	}
 }
 
 func TestAgentConfigConversionHelpers(t *testing.T) {
@@ -700,4 +757,64 @@ func TestAgentConfigConversionHelpers(t *testing.T) {
 	if _, err := convertMCPServers(map[string]MCPServerConfig{"bad": {Type: "bad"}}); err == nil {
 		t.Fatal("convertMCPServers(unsupported) error = nil, want error")
 	}
+}
+
+type testInvocationContext struct {
+	context.Context
+	session session.Session
+}
+
+func (c testInvocationContext) Agent() adkagent.Agent {
+	return nil
+}
+
+func (c testInvocationContext) Artifacts() adkagent.Artifacts {
+	return nil
+}
+
+func (c testInvocationContext) Memory() adkagent.Memory {
+	return nil
+}
+
+func (c testInvocationContext) Session() session.Session {
+	return c.session
+}
+
+func (c testInvocationContext) InvocationID() string {
+	return "test-invocation"
+}
+
+func (c testInvocationContext) Branch() string {
+	return ""
+}
+
+func (c testInvocationContext) IsolationScope() string {
+	return ""
+}
+
+func (c testInvocationContext) UserContent() *genai.Content {
+	return nil
+}
+
+func (c testInvocationContext) RunConfig() *adkagent.RunConfig {
+	return nil
+}
+
+func (c testInvocationContext) EndInvocation() {}
+
+func (c testInvocationContext) Ended() bool {
+	return false
+}
+
+func (c testInvocationContext) ResumedInput(string) (any, bool) {
+	return nil, false
+}
+
+func (c testInvocationContext) WithContext(ctx context.Context) adkagent.InvocationContext {
+	c.Context = ctx
+	return c
+}
+
+func (c testInvocationContext) WithICDelta(*adkagent.InvocationContextDelta) adkagent.InvocationContext {
+	return c
 }
