@@ -77,6 +77,18 @@ contract the same:
 import acpagent "github.com/normahq/go-adk-acpagent/v2"
 ```
 
+## Examples
+
+Runnable examples are included under:
+
+- [`examples/codex`](examples/codex) for `google.golang.org/adk`
+- [`v2/examples/codex`](v2/examples/codex) for `google.golang.org/adk/v2`
+
+The examples show the production defaults expected by this adapter: pass a
+request-scoped context to construction, configure a structured `slog.Logger`,
+choose whether ACP subprocess stderr is forwarded or discarded, set a working
+directory explicitly, and always call `Close`.
+
 ACP provider error metadata helpers are available from:
 
 ```go
@@ -97,22 +109,40 @@ under `event.CustomMetadata[acperror.ProviderErrorMetadataKey]`.
 
 Use `acpagent.CWDStateKey` (`"cwd"`) to override the ACP session working directory per ADK session. ACP session metadata is stored under `acpagent.SessionStateKey`, including the ACP `session_id`, optional `_meta`, and optional `model_config_id`. ACP plan snapshots are stored under `acpagent.PlanStateKey`.
 
+## Production Notes
+
+- Call `Close` during shutdown so the ACP subprocess exits cleanly.
+- Use `Config.Stderr` deliberately. `io.Discard` keeps application logs clean;
+  `os.Stderr` or another writer is useful when diagnosing provider startup.
+- Keep `Config.WorkingDir` or `CWDStateKey` pointed at an existing directory.
+- Treat `SessionStateKey` as adapter-owned except for documented `_meta` and
+  `model_config_id` overrides.
+- `Config.Model` is applied through ACP `session/set_config_option`; set
+  `Config.ModelConfigID` only when a provider exposes a nonstandard model
+  option id.
+
 ## Tests
 
 ```sh
 go test -race ./...
 go -C v2 test -race ./...
+go test ./... -coverprofile=coverage.out
+go tool cover -func=coverage.out
+go -C v2 test ./... -coverprofile=coverage.out
+go -C v2 tool cover -func=coverage.out
 ```
 
-Security checks run in CI through `govulncheck` for both modules. To match CI
-locally, install the pinned tool versions from `tools/go.mod` and run:
+CI requires at least 95% total statement coverage for both modules. Security
+checks run in CI through `govulncheck` for both modules. To match CI locally,
+install the pinned tool versions from `tools/go.mod` and run:
 
 ```sh
 GOBIN="$PWD/.bin" go -C tools install github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 GOBIN="$PWD/.bin" go -C tools install golang.org/x/vuln/cmd/govulncheck
 ./.bin/golangci-lint run ./...
 ./.bin/govulncheck ./...
-cd v2 && ../.bin/govulncheck ./...
+(cd v2 && ../.bin/golangci-lint run ./...)
+(cd v2 && ../.bin/govulncheck ./...)
 ```
 
 Optional integration tests require the matching ACP runtime binaries and build tags:

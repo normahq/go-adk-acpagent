@@ -1,0 +1,37 @@
+package main
+
+import (
+	"context"
+	"io"
+	"log"
+	"log/slog"
+	"os"
+
+	acpagent "github.com/normahq/go-adk-acpagent/v2"
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	agentRuntime, err := acpagent.New(acpagent.Config{
+		Context:       context.Background(),
+		Command:       []string{"codex-acp"},
+		WorkingDir:    "/workspace",
+		Model:         "openai/gpt-5.4",
+		ModelConfigID: "model",
+		Logger:        logger,
+		Stderr:        io.Discard,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		if err := agentRuntime.Close(); err != nil {
+			log.Printf("close ACP agent: %v", err)
+		}
+	}()
+
+	// Pass agentRuntime to an ADK v2 runner.
+}

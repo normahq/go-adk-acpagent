@@ -22,7 +22,8 @@ For the ADK v2 module, also run:
 go -C v2 mod tidy
 go -C v2 test ./...
 go -C v2 test -race ./...
-cd v2 && ../.bin/govulncheck ./...
+(cd v2 && ../.bin/golangci-lint run ./...)
+(cd v2 && ../.bin/govulncheck ./...)
 ```
 
 ## Compatibility
