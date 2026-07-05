@@ -10,6 +10,9 @@
 
 `go-adk-acpagent` adapts Agentic Computing Protocol (ACP) runtimes to the Google ADK `agent.Agent` interface.
 
+It lets ADK applications use ACP-compatible coding agents without taking a
+dependency on Norma's PDCA, swarm, Beads, or profile layers.
+
 ## Install
 
 ```sh
@@ -39,7 +42,7 @@ func main() {
 	}))
 
 	agentRuntime, err := acpagent.New(acpagent.Config{
-		Command:    []string{"codex-acp"},
+		Command:    []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
 		WorkingDir: "/workspace",
 		Logger:     logger,
 		Stderr:     io.Discard,
@@ -89,6 +92,22 @@ The examples show the production defaults expected by this adapter: pass a
 request-scoped context to construction, configure a structured `slog.Logger`,
 choose whether ACP subprocess stderr is forwarded or discarded, set a working
 directory explicitly, and always call `Close`.
+
+## Documentation
+
+Behavior is shared with the root module unless noted otherwise:
+
+- [Documentation index](../docs/README.md)
+- [Concepts](../docs/concepts.md): what the adapter does, why it exists, and how
+  ACP sessions map to ADK sessions.
+- [Provider recipes](../docs/provider-recipes.md): Codex, OpenCode, Claude, PI,
+  and generic ACP command examples.
+- [Session state](../docs/session-state.md): cwd overrides, ACP session
+  identity, model config IDs, metadata, plan snapshots, and output state.
+- [Troubleshooting](../docs/troubleshooting.md): process startup, stderr,
+  model selection, permissions, provider errors, and ACP inspection.
+- [Migration from Norma](../docs/migration-from-norma.md): import path and
+  config mapping from the deprecated Norma wrapper.
 
 ## Session State
 

@@ -17,7 +17,7 @@ func main() {
 
 	agentRuntime, err := acpagent.New(acpagent.Config{
 		Context:       context.Background(),
-		Command:       []string{"codex-acp"},
+		Command:       []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
 		WorkingDir:    "/workspace",
 		Model:         "openai/gpt-5.4",
 		ModelConfigID: "model",
