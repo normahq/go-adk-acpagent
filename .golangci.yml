@@ -42,7 +42,6 @@ linters:
     revive:
       rules:
         - name: exported
-          disabled: true
 
 formatters:
   enable: []

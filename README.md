@@ -8,6 +8,9 @@
 go get github.com/normahq/go-adk-acpagent
 ```
 
+This module targets Go 1.26.4 and uses the Go version declared in `go.mod`
+for CI.
+
 ## Usage
 
 ```go

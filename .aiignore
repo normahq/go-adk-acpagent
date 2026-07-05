@@ -1,0 +1,8 @@
+.git/
+.cache/
+.gocache/
+.gomodcache/
+bin/
+*.test
+coverage.out
+*.coverprofile

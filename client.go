@@ -135,6 +135,9 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if len(cfg.Command) == 0 {
 		return nil, errors.New("acp command is required")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	l := zerolog.Nop()
 	if cfg.Logger != nil {
@@ -249,12 +252,16 @@ func (c *Client) Initialize(ctx context.Context) (acp.InitializeResponse, error)
 	return resp, nil
 }
 
+// SupportsSessionLoad reports whether the initialized ACP server advertises
+// session/load support.
 func (c *Client) SupportsSessionLoad() bool {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	return c.agentCaps.LoadSession
 }
 
+// SupportsSessionResume reports whether the initialized ACP server advertises
+// session/resume support.
 func (c *Client) SupportsSessionResume() bool {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()

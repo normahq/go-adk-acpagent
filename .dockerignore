@@ -1,0 +1,10 @@
+.git
+.cache
+.gocache
+.gomodcache
+bin
+*.test
+coverage.out
+*.coverprofile
+.DS_Store
+Thumbs.db

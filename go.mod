@@ -1,6 +1,6 @@
 module github.com/normahq/go-adk-acpagent
 
-go 1.25.5
+go 1.26.4
 
 require (
 	github.com/coder/acp-go-sdk v0.12.2

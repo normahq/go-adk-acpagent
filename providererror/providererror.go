@@ -15,16 +15,27 @@ const (
 	ADKMetadataKey = "acp_provider_error"
 )
 
+// Kind identifies a provider-side failure category.
 type Kind string
 
 const (
-	KindQuotaExceeded          Kind = "quota_exceeded"
+	// KindQuotaExceeded indicates the provider account or project has exhausted
+	// its quota.
+	KindQuotaExceeded Kind = "quota_exceeded"
+	// KindAuthenticationRequired indicates the provider requires authentication.
 	KindAuthenticationRequired Kind = "authentication_required"
-	KindPaymentRequired        Kind = "payment_required"
-	KindRateLimited            Kind = "rate_limited"
-	KindUnavailable            Kind = "unavailable"
-	KindInvalidRequest         Kind = "invalid_request"
-	KindUnknown                Kind = "unknown"
+	// KindPaymentRequired indicates the provider requires billing action.
+	KindPaymentRequired Kind = "payment_required"
+	// KindRateLimited indicates the provider rejected the request due to rate
+	// limiting.
+	KindRateLimited Kind = "rate_limited"
+	// KindUnavailable indicates the provider is temporarily unavailable.
+	KindUnavailable Kind = "unavailable"
+	// KindInvalidRequest indicates the provider rejected the request shape or
+	// parameters.
+	KindInvalidRequest Kind = "invalid_request"
+	// KindUnknown indicates the provider failure could not be classified.
+	KindUnknown Kind = "unknown"
 )
 
 // ProviderError is a provider-agnostic classification of a provider-side

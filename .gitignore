@@ -1,0 +1,21 @@
+# Go build/test artifacts.
+bin/
+*.test
+*.coverprofile
+coverage.out
+
+# Go/tool caches.
+.cache/
+.gocache/
+.gomodcache/
+
+# Editor and IDE state.
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS noise.
+.DS_Store
+Thumbs.db

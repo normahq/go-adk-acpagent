@@ -530,6 +530,21 @@ func TestClientInitializeUsesConfiguredIdentity(t *testing.T) {
 	}
 }
 
+func TestNewClientDefaultsNilContext(t *testing.T) {
+	var ctx context.Context
+	client, err := NewClient(ctx, ClientConfig{
+		Command: helperCommand(t),
+	})
+	if err != nil {
+		t.Fatalf("NewClient(nil, cfg) error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+}
+
 func TestClientPromptAllowsConcurrentDifferentSessions(t *testing.T) {
 	const (
 		wantSession1 = testSessionOneOne
