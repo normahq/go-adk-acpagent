@@ -361,6 +361,12 @@ func TestLoggerContextHelpers(t *testing.T) {
 	if got.inner == nil {
 		t.Fatal("loggerFromContext() returned nil inner logger")
 	}
+	if got := loggerFromContext(nilCtx, newLogger(nil, "fallback"), "sub"); got.inner == nil {
+		t.Fatal("loggerFromContext(nil) returned nil inner logger")
+	}
+	if got := loggerFromContext(context.WithValue(context.Background(), loggerContextKey{}, logger{}), newLogger(nil, "fallback"), "sub"); got.inner == nil {
+		t.Fatal("loggerFromContext(nil stored logger) returned nil inner logger")
+	}
 
 	fallback := newLogger(nil, "fallback")
 	if got := loggerFromContext(context.Background(), fallback, "sub"); got.inner == nil {
@@ -447,6 +453,21 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	}
 	if currentACPStateMatches(created.Session, "session-1", `{"a":1}`) {
 		t.Fatal("currentACPStateMatches(different meta) = true, want false")
+	}
+
+	(&Agent{outputKey: "out"}).persistSessionStateDelta(nil, "session-1", "{}")
+	(&Agent{outputKey: "out"}).maybeSaveOutputToState(nil, "text")
+
+	emptyRemote := session.NewEvent(context.Background(), "inv-empty-remote")
+	(&Agent{outputKey: "out"}).persistSessionStateDelta(emptyRemote, " ", "{}")
+	if len(emptyRemote.Actions.StateDelta) != 0 {
+		t.Fatalf("empty remote StateDelta = %#v, want empty", emptyRemote.Actions.StateDelta)
+	}
+
+	withoutOutputKey := session.NewEvent(context.Background(), "inv-without-output")
+	(&Agent{}).maybeSaveOutputToState(withoutOutputKey, "text")
+	if len(withoutOutputKey.Actions.StateDelta) != 0 {
+		t.Fatalf("without output key StateDelta = %#v, want empty", withoutOutputKey.Actions.StateDelta)
 	}
 
 	partial := session.NewEvent(context.Background(), "inv-partial")

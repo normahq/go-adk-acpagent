@@ -205,6 +205,52 @@ func TestRequestPermissionFallbacks(t *testing.T) {
 	}
 }
 
+func TestClientConstructorValidationFailures(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewClient(context.Background(), ClientConfig{}); err == nil || !strings.Contains(err.Error(), "acp command is required") {
+		t.Fatalf("NewClient(empty command) error = %v, want command required", err)
+	}
+
+	if _, err := NewClient(context.Background(), ClientConfig{Command: []string{"/definitely/missing/acp-agent"}}); err == nil || !strings.Contains(err.Error(), "start acp process") {
+		t.Fatalf("NewClient(missing executable) error = %v, want start error", err)
+	}
+}
+
+func TestAgentConstructorClosesClientAfterMCPConversionFailure(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(Config{
+		Context:    context.Background(),
+		Command:    helperCommand(t),
+		WorkingDir: t.TempDir(),
+		MCPServers: map[string]MCPServerConfig{
+			"bad": {Type: MCPServerTypeStdio},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "convert mcp servers") {
+		t.Fatalf("New(bad mcp config) error = %v, want conversion error", err)
+	}
+}
+
+func TestClientSetSessionModelAndModeValidation(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{logger: newLogger(nil, "")}
+	if err := client.SetSessionModel(context.Background(), "", "model"); !errors.Is(err, errSessionIDRequired) {
+		t.Fatalf("SetSessionModel(empty session) error = %v, want errSessionIDRequired", err)
+	}
+	if err := client.SetSessionModel(context.Background(), "session-1", " "); !errors.Is(err, errModelRequired) {
+		t.Fatalf("SetSessionModel(empty model) error = %v, want errModelRequired", err)
+	}
+	if err := client.SetSessionMode(context.Background(), "", "mode"); !errors.Is(err, errSessionIDRequired) {
+		t.Fatalf("SetSessionMode(empty session) error = %v, want errSessionIDRequired", err)
+	}
+	if err := client.SetSessionMode(context.Background(), "session-1", " "); !errors.Is(err, errModeRequired) {
+		t.Fatalf("SetSessionMode(empty mode) error = %v, want errModeRequired", err)
+	}
+}
+
 func TestClientActiveSessionHelpers(t *testing.T) {
 	t.Parallel()
 
