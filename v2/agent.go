@@ -18,10 +18,10 @@ import (
 	"unicode"
 
 	acp "github.com/coder/acp-go-sdk"
-	"github.com/normahq/go-adk-acpagent/acperror"
+	"github.com/normahq/go-adk-acpagent/v2/acperror"
 	"github.com/rs/zerolog"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -336,7 +336,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		if remote.fresh {
 			promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 		}
-		stateEvent := session.NewEvent(ctx.InvocationID())
+		stateEvent := session.NewEvent(ctx, ctx.InvocationID())
 		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON)
 		if len(stateEvent.Actions.StateDelta) > 0 {
 			a.logADKEvent(logger, stateEvent, "yielding acp session state event")
@@ -357,7 +357,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			if remote.fresh {
 				promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 			}
-			stateEvent := session.NewEvent(ctx.InvocationID())
+			stateEvent := session.NewEvent(ctx, ctx.InvocationID())
 			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON)
 			if len(stateEvent.Actions.StateDelta) > 0 {
 				a.logADKEvent(logger, stateEvent, "yielding recovered acp session state event")
@@ -377,7 +377,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			}
 		}
 
-		ev := session.NewEvent(ctx.InvocationID())
+		ev := session.NewEvent(ctx, ctx.InvocationID())
 		if result.promptResult != nil {
 			ev.FinishReason = mapACPStopReasonToFinishReason(result.promptResult.Response.StopReason)
 			ev.UsageMetadata = mapACPUsageToUsageMetadata(result.promptResult.Usage)
@@ -443,7 +443,7 @@ func (a *Agent) runPromptOnce(
 			if terminalErr, ok := terminalPromptErrorFromNotification(ext); ok {
 				out.terminalError = terminalErr
 			}
-			ev, ok := mapACPUpdateToEvent(logger, ctx.InvocationID(), ext)
+			ev, ok := mapACPUpdateToEvent(ctx, logger, ctx.InvocationID(), ext)
 			if !ok {
 				continue
 			}
@@ -1448,21 +1448,21 @@ func headersToHttpHeaders(headers map[string]string) []acp.HttpHeader {
 	return h
 }
 
-func mapACPUpdateToEvent(logger zerolog.Logger, invocationID string, ext ExtendedSessionNotification) (*session.Event, bool) {
+func mapACPUpdateToEvent(ctx context.Context, logger zerolog.Logger, invocationID string, ext ExtendedSessionNotification) (*session.Event, bool) {
 	update := ext.Update
 	switch {
 	case update.UserMessageChunk != nil:
-		return mapACPUserMessageChunk(logger, invocationID, update.UserMessageChunk)
+		return mapACPUserMessageChunk(ctx, logger, invocationID, update.UserMessageChunk)
 	case update.AgentMessageChunk != nil:
-		return mapACPAgentMessageChunk(logger, invocationID, update.AgentMessageChunk)
+		return mapACPAgentMessageChunk(ctx, logger, invocationID, update.AgentMessageChunk)
 	case update.AgentThoughtChunk != nil:
-		return mapACPAgentThoughtChunk(logger, invocationID, update.AgentThoughtChunk)
+		return mapACPAgentThoughtChunk(ctx, logger, invocationID, update.AgentThoughtChunk)
 	case update.ToolCall != nil:
-		return mapACPToolCall(invocationID, update.ToolCall)
+		return mapACPToolCall(ctx, invocationID, update.ToolCall)
 	case update.ToolCallUpdate != nil:
-		return mapACPToolCallUpdate(invocationID, update.ToolCallUpdate)
+		return mapACPToolCallUpdate(ctx, invocationID, update.ToolCallUpdate)
 	case update.Plan != nil:
-		return mapACPPlanUpdate(logger, invocationID, update.Plan)
+		return mapACPPlanUpdate(ctx, logger, invocationID, update.Plan)
 	case update.AvailableCommandsUpdate != nil:
 		logIgnoredACPUpdate(logger, "available_commands_update", map[string]any{
 			"availableCommands": update.AvailableCommandsUpdate.AvailableCommands,
@@ -1497,7 +1497,7 @@ func mapACPUpdateToEvent(logger zerolog.Logger, invocationID string, ext Extende
 		if err := json.Unmarshal(ext.Raw, &raw); err == nil {
 			if u, ok := raw["update"].(map[string]any); ok {
 				if disc, ok := u["sessionUpdate"].(string); ok && disc == acpUsageUpdate {
-					return mapACPLegacyUsageUpdate(logger, invocationID, u)
+					return mapACPLegacyUsageUpdate(ctx, logger, invocationID, u)
 				}
 			}
 		}
@@ -1507,24 +1507,24 @@ func mapACPUpdateToEvent(logger zerolog.Logger, invocationID string, ext Extende
 	}
 }
 
-func mapACPLegacyUsageUpdate(logger zerolog.Logger, invocationID string, update map[string]any) (*session.Event, bool) {
+func mapACPLegacyUsageUpdate(ctx context.Context, logger zerolog.Logger, invocationID string, update map[string]any) (*session.Event, bool) {
 	usage := mapACPLegacyUsageToUsageMetadata(update)
 	if usage == nil {
 		logger.Debug().Interface("update", update).Msg("ignoring usage_update with no token counts")
 		return nil, false
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.UsageMetadata = usage
 	ev.Partial = true
 	return ev, true
 }
 
-func mapACPAgentMessageChunk(logger zerolog.Logger, invocationID string, chunk *acp.SessionUpdateAgentMessageChunk) (*session.Event, bool) {
+func mapACPAgentMessageChunk(ctx context.Context, logger zerolog.Logger, invocationID string, chunk *acp.SessionUpdateAgentMessageChunk) (*session.Event, bool) {
 	part, ok := mapACPContentBlockToPart(logger, chunk.Content)
 	if !ok {
 		return nil, false
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	ev.Partial = true
 
@@ -1557,30 +1557,30 @@ func copyACPProviderErrorMetadata(ev *session.Event, meta map[string]any) {
 	ev.CustomMetadata[acperror.ProviderErrorMetadataKey] = providerErr.Metadata()
 }
 
-func mapACPUserMessageChunk(logger zerolog.Logger, invocationID string, chunk *acp.SessionUpdateUserMessageChunk) (*session.Event, bool) {
+func mapACPUserMessageChunk(ctx context.Context, logger zerolog.Logger, invocationID string, chunk *acp.SessionUpdateUserMessageChunk) (*session.Event, bool) {
 	part, ok := mapACPContentBlockToPart(logger, chunk.Content)
 	if !ok {
 		return nil, false
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleUser)
 	ev.Partial = true
 	return ev, true
 }
 
-func mapACPAgentThoughtChunk(logger zerolog.Logger, invocationID string, chunk *acp.SessionUpdateAgentThoughtChunk) (*session.Event, bool) {
+func mapACPAgentThoughtChunk(ctx context.Context, logger zerolog.Logger, invocationID string, chunk *acp.SessionUpdateAgentThoughtChunk) (*session.Event, bool) {
 	part, ok := mapACPContentBlockToPart(logger, chunk.Content)
 	if !ok {
 		return nil, false
 	}
 	part.Thought = true
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	ev.Partial = true
 	return ev, true
 }
 
-func mapACPToolCall(invocationID string, tool *acp.SessionUpdateToolCall) (*session.Event, bool) {
+func mapACPToolCall(ctx context.Context, invocationID string, tool *acp.SessionUpdateToolCall) (*session.Event, bool) {
 	args := map[string]any{
 		"kind":      tool.Kind,
 		"status":    tool.Status,
@@ -1596,7 +1596,7 @@ func mapACPToolCall(invocationID string, tool *acp.SessionUpdateToolCall) (*sess
 			Args: args,
 		},
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	if isACPToolStatusLongRunning(tool.Status) {
 		ev.LongRunningToolIDs = []string{string(tool.ToolCallId)}
@@ -1604,7 +1604,7 @@ func mapACPToolCall(invocationID string, tool *acp.SessionUpdateToolCall) (*sess
 	return ev, true
 }
 
-func mapACPToolCallUpdate(invocationID string, tool *acp.SessionToolCallUpdate) (*session.Event, bool) {
+func mapACPToolCallUpdate(ctx context.Context, invocationID string, tool *acp.SessionToolCallUpdate) (*session.Event, bool) {
 	response := map[string]any{
 		"status":    tool.Status,
 		"title":     tool.Title,
@@ -1620,7 +1620,7 @@ func mapACPToolCallUpdate(invocationID string, tool *acp.SessionToolCallUpdate) 
 			Response: response,
 		},
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	if tool.Status != nil && isACPToolStatusLongRunning(*tool.Status) {
 		ev.LongRunningToolIDs = []string{string(tool.ToolCallId)}
@@ -1628,7 +1628,7 @@ func mapACPToolCallUpdate(invocationID string, tool *acp.SessionToolCallUpdate) 
 	return ev, true
 }
 
-func mapACPPlanUpdate(_ zerolog.Logger, invocationID string, plan *acp.SessionUpdatePlan) (*session.Event, bool) {
+func mapACPPlanUpdate(ctx context.Context, _ zerolog.Logger, invocationID string, plan *acp.SessionUpdatePlan) (*session.Event, bool) {
 	if plan == nil || len(plan.Entries) == 0 {
 		return nil, false
 	}
@@ -1640,7 +1640,7 @@ func mapACPPlanUpdate(_ zerolog.Logger, invocationID string, plan *acp.SessionUp
 			"priority": entry.Priority,
 		})
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Actions.StateDelta[PlanStateKey] = map[string]any{
 		acpPlanEntriesKey: entries,
 	}

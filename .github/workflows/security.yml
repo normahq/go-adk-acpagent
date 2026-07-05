@@ -1,0 +1,35 @@
+name: security
+
+on:
+  pull_request:
+    branches: [ master, main ]
+  push:
+    branches: [ master, main ]
+  schedule:
+    - cron: "23 4 * * 1"
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+      - name: Download modules
+        run: go mod download
+      - name: Verify modules
+        run: go mod verify
+      - name: Download v2 modules
+        run: go -C v2 mod download
+      - name: Verify v2 modules
+        run: go -C v2 mod verify
+      - name: Install govulncheck
+        run: GOBIN="$PWD/.bin" go -C tools install golang.org/x/vuln/cmd/govulncheck
+      - name: Run govulncheck
+        run: ./.bin/govulncheck ./...
+      - name: Run govulncheck v2
+        run: ../.bin/govulncheck ./...
+        working-directory: v2

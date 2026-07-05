@@ -19,12 +19,12 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
-	"github.com/normahq/go-adk-acpagent/acperror"
+	"github.com/normahq/go-adk-acpagent/v2/acperror"
 	"github.com/rs/zerolog"
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/artifact"
-	runnerpkg "google.golang.org/adk/runner"
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/artifact"
+	runnerpkg "google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -56,7 +56,7 @@ func expectedPromptsJSON(t *testing.T, prompts ...string) string {
 func TestMapACPAgentMessageChunkCopiesProviderErrorMetadata(t *testing.T) {
 	t.Parallel()
 
-	ev, ok := mapACPAgentMessageChunk(zerolog.Nop(), "inv-1", &acp.SessionUpdateAgentMessageChunk{
+	ev, ok := mapACPAgentMessageChunk(t.Context(), zerolog.Nop(), "inv-1", &acp.SessionUpdateAgentMessageChunk{
 		Content: acp.TextBlock("Error: quota exceeded"),
 		Meta: map[string]any{
 			"provider_error": map[string]any{
@@ -112,7 +112,7 @@ func TestClientPromptReceivesUpdates(t *testing.T) {
 
 	var chunks []string
 	for note := range updates {
-		ev, ok := mapACPUpdateToEvent(zerolog.Nop(), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
+		ev, ok := mapACPUpdateToEvent(t.Context(), zerolog.Nop(), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
 		if ok {
 			if text := extractPromptText(ev.Content); text != "" {
 				chunks = append(chunks, text)
@@ -484,7 +484,7 @@ func TestClientHandlesPermissionRequest(t *testing.T) {
 
 	var chunks []string
 	for note := range updates {
-		ev, ok := mapACPUpdateToEvent(zerolog.Nop(), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
+		ev, ok := mapACPUpdateToEvent(t.Context(), zerolog.Nop(), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
 		if ok {
 			if text := extractPromptText(ev.Content); text != "" {
 				chunks = append(chunks, text)
@@ -867,7 +867,7 @@ func TestAgentBeforeAgentCallbacksShortCircuitACPPrompt(t *testing.T) {
 		}),
 		WorkingDir: t.TempDir(),
 		BeforeAgentCallbacks: []agent.BeforeAgentCallback{
-			func(agent.CallbackContext) (*genai.Content, error) {
+			func(agent.Context) (*genai.Content, error) {
 				return genai.NewContentFromText("before-callback", genai.RoleModel), nil
 			},
 		},
@@ -909,7 +909,7 @@ func TestAgentAfterAgentCallbacksEmitPostRunEvent(t *testing.T) {
 		Command:    helperCommand(t),
 		WorkingDir: t.TempDir(),
 		AfterAgentCallbacks: []agent.AfterAgentCallback{
-			func(agent.CallbackContext) (*genai.Content, error) {
+			func(agent.Context) (*genai.Content, error) {
 				return genai.NewContentFromText("after-callback", genai.RoleModel), nil
 			},
 		},
@@ -3326,7 +3326,7 @@ func TestAgentRunStoresOutputKeyInFinalStateDelta(t *testing.T) {
 
 func TestAgentMaybeSaveOutputToStateSkipsEmptyOutput(t *testing.T) {
 	a := &Agent{outputKey: "result"}
-	ev := session.NewEvent("inv-1")
+	ev := session.NewEvent(t.Context(), "inv-1")
 	a.maybeSaveOutputToState(ev, "")
 	if _, ok := ev.Actions.StateDelta["result"]; ok {
 		t.Fatalf("state delta unexpectedly contains result for empty output")
@@ -4072,7 +4072,7 @@ func readPromptOutput(t *testing.T, updates <-chan ExtendedSessionNotification, 
 	t.Helper()
 	var chunks []string
 	for note := range updates {
-		ev, ok := mapACPUpdateToEvent(zerolog.Nop(), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
+		ev, ok := mapACPUpdateToEvent(t.Context(), zerolog.Nop(), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
 		if ok {
 			if text := extractPromptText(ev.Content); text != "" {
 				chunks = append(chunks, text)
@@ -4151,7 +4151,7 @@ func TestMapACPPlanUpdate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ev, ok := mapACPPlanUpdate(logger, "inv-1", tt.plan)
+			ev, ok := mapACPPlanUpdate(t.Context(), logger, "inv-1", tt.plan)
 			if ok != tt.wantOK {
 				t.Errorf("mapACPPlanUpdate() ok = %v, want %v", ok, tt.wantOK)
 			}

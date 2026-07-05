@@ -2,8 +2,8 @@
 
 [![test](https://github.com/normahq/go-adk-acpagent/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/normahq/go-adk-acpagent/actions/workflows/test.yml)
 [![lint](https://github.com/normahq/go-adk-acpagent/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/normahq/go-adk-acpagent/actions/workflows/lint.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/normahq/go-adk-acpagent.svg)](https://pkg.go.dev/github.com/normahq/go-adk-acpagent)
-[![License](https://img.shields.io/github/license/normahq/go-adk-acpagent)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/normahq/go-adk-acpagent/v2.svg)](https://pkg.go.dev/github.com/normahq/go-adk-acpagent/v2)
+[![License](https://img.shields.io/github/license/normahq/go-adk-acpagent)](../LICENSE)
 [![Version](https://img.shields.io/github/v/tag/normahq/go-adk-acpagent?label=version)](https://github.com/normahq/go-adk-acpagent/tags)
 
 `go-adk-acpagent` adapts Agentic Computing Protocol (ACP) runtimes to the Google ADK `agent.Agent` interface.
@@ -11,13 +11,11 @@
 ## Install
 
 ```sh
-go get github.com/normahq/go-adk-acpagent
+go get github.com/normahq/go-adk-acpagent/v2
 ```
 
 This module targets Go 1.26.4 and uses the Go version declared in `go.mod`
 for CI.
-
-Use `github.com/normahq/go-adk-acpagent/v2` with `google.golang.org/adk/v2`.
 
 ## Usage
 
@@ -27,7 +25,7 @@ package main
 import (
 	"log"
 
-	acpagent "github.com/normahq/go-adk-acpagent"
+	acpagent "github.com/normahq/go-adk-acpagent/v2"
 )
 
 func main() {
@@ -51,12 +49,12 @@ func main() {
 ACP provider error metadata helpers are available from:
 
 ```go
-import "github.com/normahq/go-adk-acpagent/acperror"
+import "github.com/normahq/go-adk-acpagent/v2/acperror"
 ```
 
 ACP provider failures are projected onto ADK event `ErrorCode` and
-`ErrorMessage` fields when available. ACP-specific details are also available
-under `event.CustomMetadata[acperror.ProviderErrorMetadataKey]`.
+`ErrorMessage` fields. ACP-specific details are also available under
+`event.CustomMetadata[acperror.ProviderErrorMetadataKey]`.
 
 ## Session State
 

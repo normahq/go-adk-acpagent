@@ -1,6 +1,6 @@
-// Package providererror defines provider-agnostic provider failure metadata
-// carried through ACP and ADK runtime layers.
-package providererror
+// Package acperror defines ACP provider failure metadata carried through ACP
+// and ADK runtime layers.
+package acperror
 
 import (
 	"encoding/json"
@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	// WireKey is the ACP metadata/data key for provider errors.
-	WireKey = "provider_error"
-	// ADKMetadataKey is the ADK event metadata key used after ACP mapping.
-	ADKMetadataKey = "acp_provider_error"
+	// ProviderErrorWireKey is the ACP metadata/data key for provider errors.
+	ProviderErrorWireKey = "provider_error"
+	// ProviderErrorMetadataKey is the ADK event metadata key used after ACP
+	// mapping.
+	ProviderErrorMetadataKey = "acp_provider_error"
 )
 
 // Kind identifies a provider-side failure category.
@@ -38,8 +39,8 @@ const (
 	KindUnknown Kind = "unknown"
 )
 
-// ProviderError is a provider-agnostic classification of a provider-side
-// failure. It intentionally mirrors the ACP wire shape without branding.
+// ProviderError is an ACP provider-agnostic classification of a provider-side
+// failure. It intentionally mirrors the ACP wire shape.
 type ProviderError struct {
 	Kind      Kind   `json:"kind"`
 	Message   string `json:"message,omitempty"`
@@ -62,13 +63,36 @@ func (e *ProviderError) Error() string {
 	return fmt.Sprintf("provider error %s", kind)
 }
 
+// Metadata returns the wire-shaped metadata representation of e.
+func (e *ProviderError) Metadata() map[string]any {
+	if e == nil {
+		return nil
+	}
+	meta := map[string]any{
+		"kind": string(e.Kind),
+	}
+	if e.Message != "" {
+		meta["message"] = e.Message
+	}
+	if e.RequestID != "" {
+		meta["request_id"] = e.RequestID
+	}
+	if e.Provider != "" {
+		meta["provider"] = e.Provider
+	}
+	if e.Retryable != nil {
+		meta["retryable"] = *e.Retryable
+	}
+	return meta
+}
+
 // FromWireData extracts provider_error from JSON-RPC error data or ACP _meta.
 func FromWireData(data any) (*ProviderError, bool) {
 	if data == nil {
 		return nil, false
 	}
 	if meta, ok := asMap(data); ok {
-		if value, ok := meta[WireKey]; ok {
+		if value, ok := meta[ProviderErrorWireKey]; ok {
 			return FromWireValue(value)
 		}
 	}
@@ -88,7 +112,7 @@ func FromADKMetadata(meta map[string]any) (*ProviderError, bool) {
 	if len(meta) == 0 {
 		return nil, false
 	}
-	value, ok := meta[ADKMetadataKey]
+	value, ok := meta[ProviderErrorMetadataKey]
 	if !ok {
 		return nil, false
 	}
