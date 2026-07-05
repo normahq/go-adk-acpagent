@@ -25,6 +25,7 @@ linters:
     - embeddedstructfieldcheck
     - funcorder
     - tagalign
+    - goconst
   enable:
     - errcheck
     - govet
@@ -34,7 +35,6 @@ linters:
     - revive
     - misspell
     - unconvert
-    - goconst
     - gocritic
     - whitespace
     - nolintlint
