@@ -548,6 +548,34 @@ func TestClientInitializeUsesConfiguredIdentity(t *testing.T) {
 	}
 }
 
+func TestClientAuthenticateRoundTrip(t *testing.T) {
+	client, err := NewClient(context.Background(), ClientConfig{
+		Command: helperCommandWithEnv(t, map[string]string{"GO_EXPECT_AUTH_METHOD": "oauth"}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if err := client.Authenticate(context.Background(), "oauth"); err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+}
+
+func TestClientAuthenticateReturnsRPCError(t *testing.T) {
+	client, err := NewClient(context.Background(), ClientConfig{
+		Command: helperCommandWithEnv(t, map[string]string{"GO_FAIL_AUTHENTICATE": "1"}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if err := client.Authenticate(context.Background(), "oauth"); err == nil {
+		t.Fatal("Authenticate() error = nil, want RPC error")
+	}
+}
+
 func TestNewClientDefaultsNilContext(t *testing.T) {
 	var ctx context.Context
 	client, err := NewClient(ctx, ClientConfig{
@@ -605,6 +633,47 @@ func TestClientPromptAllowsConcurrentDifferentSessions(t *testing.T) {
 	}
 	if got2 != wantSession2 {
 		t.Fatalf("session2 output = %q, want %q", got2, wantSession2)
+	}
+}
+
+func TestClientLoadSessionWithMetaRoundTrip(t *testing.T) {
+	cwd := t.TempDir()
+	expectedMeta := `{"provider":"test"}`
+	client, err := NewClient(context.Background(), ClientConfig{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_SUPPORT_LOAD_SESSION":    "1",
+			"GO_EXPECT_LOAD_SESSION_ID":  "session-1",
+			"GO_EXPECT_LOAD_SESSION_CWD": cwd,
+			"GO_EXPECT_LOAD_META_RAW":    expectedMeta,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	if !client.SupportsSessionLoad() {
+		t.Fatal("SupportsSessionLoad() = false, want true")
+	}
+	if _, err := client.LoadSessionWithMeta(context.Background(), "session-1", cwd, nil, map[string]any{"provider": "test"}); err != nil {
+		t.Fatalf("LoadSessionWithMeta() error = %v", err)
+	}
+}
+
+func TestClientLoadSessionWithMetaReturnsRPCError(t *testing.T) {
+	client, err := NewClient(context.Background(), ClientConfig{
+		Command: helperCommandWithEnv(t, map[string]string{"GO_FAIL_LOAD_ENTITY_NOT_FOUND": "1"}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if _, err := client.LoadSessionWithMeta(context.Background(), "missing", t.TempDir(), nil, nil); err == nil {
+		t.Fatal("LoadSessionWithMeta() error = nil, want RPC error")
 	}
 }
 
@@ -1120,6 +1189,79 @@ func TestAgentInstructionProviderSkipsTemplateInjection(t *testing.T) {
 	want := "session-1:hello"
 	if got != want {
 		t.Fatalf("final text = %q, want %q", got, want)
+	}
+}
+
+func TestAgentInstructionProviderReceivesReadonlyContext(t *testing.T) {
+	seen := false
+	a, err := New(Config{
+		Context:    context.Background(),
+		Command:    helperCommand(t),
+		WorkingDir: t.TempDir(),
+		InstructionProvider: func(ctx agent.ReadonlyContext) (string, error) {
+			seen = true
+			if ctx.UserContent() == nil || extractPromptText(ctx.UserContent()) != "hello" {
+				return "", fmt.Errorf("readonly user content = %#v, want hello", ctx.UserContent())
+			}
+			if ctx.InvocationID() == "" {
+				return "", fmt.Errorf("readonly invocation id is empty")
+			}
+			if ctx.AgentName() != defaultAgentName {
+				return "", fmt.Errorf("readonly agent name = %q, want %q", ctx.AgentName(), defaultAgentName)
+			}
+			if ctx.UserID() != "test-user" || ctx.AppName() != "test-app" {
+				return "", fmt.Errorf("readonly identity = (%q, %q), want test-user/test-app", ctx.UserID(), ctx.AppName())
+			}
+			if ctx.SessionID() == "" {
+				return "", fmt.Errorf("readonly session id is empty")
+			}
+			_ = ctx.Branch()
+			if got, err := ctx.ReadonlyState().Get("topic"); err != nil || got != "docs" {
+				return "", fmt.Errorf("readonly state topic = (%v, %v), want docs nil", got, err)
+			}
+			if _, ok := ctx.Deadline(); ok {
+				return "", fmt.Errorf("readonly deadline ok = true, want false")
+			}
+			_ = ctx.Done()
+			if ctx.Err() != nil {
+				return "", fmt.Errorf("readonly Err() = %v, want nil", ctx.Err())
+			}
+			if got := ctx.Value("missing"); got != nil {
+				return "", fmt.Errorf("readonly Value(missing) = %#v, want nil", got)
+			}
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	sessionService := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{
+		AppName:        "test-app",
+		Agent:          a,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	sess, err := sessionService.Create(context.Background(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+		State:   map[string]any{"topic": "docs"},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	for _, runErr := range r.Run(context.Background(), "test-user", sess.Session.ID(), genai.NewContentFromText("hello", genai.RoleUser), agent.RunConfig{}) {
+		if runErr != nil {
+			t.Fatalf("runner event error = %v", runErr)
+		}
+	}
+	if !seen {
+		t.Fatal("instruction provider was not called")
 	}
 }
 
@@ -3393,6 +3535,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	expectedLoadSessionID := os.Getenv("GO_EXPECT_LOAD_SESSION_ID")
 	expectedLoadSessionCWD := os.Getenv("GO_EXPECT_LOAD_SESSION_CWD")
 	expectedLoadMetaRaw := os.Getenv("GO_EXPECT_LOAD_META_RAW")
+	expectedAuthMethod := os.Getenv("GO_EXPECT_AUTH_METHOD")
 	supportSessionResume := os.Getenv("GO_SUPPORT_SESSION_RESUME") == "1"
 	supportLoadSession := os.Getenv("GO_SUPPORT_LOAD_SESSION") == "1"
 	expectedPromptsRaw := os.Getenv("GO_EXPECT_PROMPTS")
@@ -3408,6 +3551,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	failFirstResumeInvalidParamsSessionNotFound := os.Getenv("GO_FAIL_FIRST_RESUME_INVALID_PARAMS_SESSION_NOT_FOUND") == "1"
 	failLoadMethodNotFound := os.Getenv("GO_FAIL_LOAD_METHOD_NOT_FOUND") == "1"
 	failLoadEntityNotFound := os.Getenv("GO_FAIL_LOAD_ENTITY_NOT_FOUND") == "1"
+	failAuthenticate := os.Getenv("GO_FAIL_AUTHENTICATE") == "1"
 	failFirstPromptEntityNotFound := os.Getenv("GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND") == "1"
 	failIfResumeCalled := os.Getenv("GO_FAIL_IF_RESUME_CALLED") == "1"
 	failIfLoadCalled := os.Getenv("GO_FAIL_IF_LOAD_CALLED") == "1"
@@ -3600,6 +3744,26 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				}
 			}
 			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(initResp)})
+		case acp.AgentMethodAuthenticate:
+			var req helperAuthenticateRequest
+			must(json.Unmarshal(msg.Params, &req))
+			if expectedAuthMethod != "" && req.MethodID != expectedAuthMethod {
+				writeEnvelope(stdout, helperEnvelope{
+					JSONRPC: "2.0",
+					ID:      msg.ID,
+					Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected auth method: %q, want %q", req.MethodID, expectedAuthMethod)},
+				})
+				continue
+			}
+			if failAuthenticate {
+				writeEnvelope(stdout, helperEnvelope{
+					JSONRPC: "2.0",
+					ID:      msg.ID,
+					Error:   &helperError{Code: -32603, Message: "Authentication failed"},
+				})
+				continue
+			}
+			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperAuthenticateResponse{})})
 		case acp.AgentMethodSessionNew:
 			var req helperNewSessionRequest
 			must(json.Unmarshal(msg.Params, &req))
@@ -4007,6 +4171,12 @@ type helperImplementation struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 }
+
+type helperAuthenticateRequest struct {
+	MethodID string `json:"methodId"`
+}
+
+type helperAuthenticateResponse struct{}
 
 type helperNewSessionResponse struct {
 	SessionID string `json:"sessionId"`

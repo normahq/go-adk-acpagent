@@ -38,6 +38,27 @@ func TestMapACPUserAndThoughtChunks(t *testing.T) {
 	}
 }
 
+func TestMapACPAgentMessageChunkMetadataVariants(t *testing.T) {
+	t.Parallel()
+
+	legacyID := "legacy-message"
+	ev, ok := mapACPAgentMessageChunk(context.Background(), newLogger(nil, ""), "inv-message", &acp.SessionUpdateAgentMessageChunk{
+		Content:   acp.TextBlock("agent text"),
+		MessageId: &legacyID,
+		Meta:      map[string]any{"messageId": "meta-message"},
+	})
+	if !ok {
+		t.Fatal("mapACPAgentMessageChunk() ok = false, want true")
+	}
+	if got := ev.CustomMetadata["acp_message_id"]; got != legacyID {
+		t.Fatalf("acp_message_id = %#v, want %q", got, legacyID)
+	}
+
+	if ev, ok := mapACPAgentMessageChunk(context.Background(), newLogger(nil, ""), "inv-empty", &acp.SessionUpdateAgentMessageChunk{}); ok || ev != nil {
+		t.Fatalf("mapACPAgentMessageChunk(empty) = (%#v, %v), want nil false", ev, ok)
+	}
+}
+
 func TestMapACPContentBlockToPartMedia(t *testing.T) {
 	t.Parallel()
 
@@ -467,4 +488,30 @@ func TestAgentMetadataAndTextHelpers(t *testing.T) {
 	a := &Agent{sessionModel: "model", sessionMode: "mode"}
 	a.logBoundRemoteSession(newLogger(nil, ""), "bound", "session-1", "/tmp", "{}")
 	a.logADKEvent(newLogger(nil, ""), nil, "ignored")
+}
+
+func TestAgentConfigConversionHelpers(t *testing.T) {
+	t.Parallel()
+
+	env := envToEnvVars(map[string]string{"B": "2", "A": "1"})
+	if len(env) != 2 || env[0].Name != "A" || env[0].Value != "1" || env[1].Name != "B" {
+		t.Fatalf("envToEnvVars() = %#v, want sorted A/B", env)
+	}
+	headers := headersToHttpHeaders(map[string]string{"X-B": "2", "X-A": "1"})
+	if len(headers) != 2 || headers[0].Name != "X-A" || headers[0].Value != "1" || headers[1].Name != "X-B" {
+		t.Fatalf("headersToHttpHeaders() = %#v, want sorted X-A/X-B", headers)
+	}
+	if got := envToEnvVars(nil); len(got) != 0 {
+		t.Fatalf("envToEnvVars(nil) length = %d, want 0", len(got))
+	}
+	if got := headersToHttpHeaders(nil); len(got) != 0 {
+		t.Fatalf("headersToHttpHeaders(nil) length = %d, want 0", len(got))
+	}
+
+	if _, err := convertMCPServers(map[string]MCPServerConfig{"bad": {Type: MCPServerTypeStdio}}); err == nil {
+		t.Fatal("convertMCPServers(empty stdio command) error = nil, want error")
+	}
+	if _, err := convertMCPServers(map[string]MCPServerConfig{"bad": {Type: "bad"}}); err == nil {
+		t.Fatal("convertMCPServers(unsupported) error = nil, want error")
+	}
 }
