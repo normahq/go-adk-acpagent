@@ -1,5 +1,6 @@
 # Go build/test artifacts.
 bin/
+.bin/
 *.test
 *.coverprofile
 coverage.out

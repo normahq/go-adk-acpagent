@@ -8,7 +8,9 @@ that adapts ACP runtimes to Google ADK agents.
 - Keep the public API backward compatible within a major version.
 - Use the Go version declared in `go.mod`.
 - Run `go mod tidy` after dependency changes.
-- Run `go test ./...`, `go test -race ./...`, and `go tool golangci-lint run ./...`
+- Run `go test ./...`, `go test -race ./...`,
+  `GOBIN="$PWD/.bin" go -C tools install github.com/golangci/golangci-lint/v2/cmd/golangci-lint`,
+  and `./.bin/golangci-lint run ./...`
   before publishing.
 - Keep examples runnable and godoc-friendly.
 
