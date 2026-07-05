@@ -5,7 +5,6 @@ go 1.26.4
 require (
 	github.com/coder/acp-go-sdk v0.12.2
 	github.com/modelcontextprotocol/go-sdk v1.5.0
-	github.com/rs/zerolog v1.35.1
 	google.golang.org/adk v1.3.0
 	google.golang.org/genai v1.57.0
 )
@@ -26,8 +25,6 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.15 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect

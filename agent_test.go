@@ -15,12 +15,12 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/normahq/go-adk-acpagent/acperror"
-	"github.com/rs/zerolog"
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/artifact"
 	runnerpkg "google.golang.org/adk/runner"
@@ -53,10 +53,41 @@ func expectedPromptsJSON(t *testing.T, prompts ...string) string {
 	return string(raw)
 }
 
+func testSlogLogger(w io.Writer, level slog.Level) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level}))
+}
+
+func testLogger(w io.Writer, level slog.Level) logger {
+	return newLogger(testSlogLogger(w, level), "")
+}
+
+type testLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *testLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *testLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *testLogBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
+}
+
 func TestMapACPAgentMessageChunkCopiesProviderErrorMetadata(t *testing.T) {
 	t.Parallel()
 
-	ev, ok := mapACPAgentMessageChunk(zerolog.Nop(), "inv-1", &acp.SessionUpdateAgentMessageChunk{
+	ev, ok := mapACPAgentMessageChunk(newLogger(nil, ""), "inv-1", &acp.SessionUpdateAgentMessageChunk{
 		Content: acp.TextBlock("Error: quota exceeded"),
 		Meta: map[string]any{
 			"provider_error": map[string]any{
@@ -112,7 +143,7 @@ func TestClientPromptReceivesUpdates(t *testing.T) {
 
 	var chunks []string
 	for note := range updates {
-		ev, ok := mapACPUpdateToEvent(zerolog.Nop(), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
+		ev, ok := mapACPUpdateToEvent(newLogger(nil, ""), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
 		if ok {
 			if text := extractPromptText(ev.Content); text != "" {
 				chunks = append(chunks, text)
@@ -351,12 +382,6 @@ func TestIsACPSessionAlreadyExistsError(t *testing.T) {
 }
 
 func TestClientSuppressesPeerDisconnectInfoByDefault(t *testing.T) {
-	prev := zerolog.GlobalLevel()
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	t.Cleanup(func() {
-		zerolog.SetGlobalLevel(prev)
-	})
-
 	var stderr bytes.Buffer
 	client, err := NewClient(context.Background(), ClientConfig{
 		Command: helperCommand(t),
@@ -379,22 +404,9 @@ func TestClientSuppressesPeerDisconnectInfoByDefault(t *testing.T) {
 	}
 }
 
-func TestClientLogsPeerDisconnectInfoInDebug(t *testing.T) {
-	prev := zerolog.GlobalLevel()
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	t.Cleanup(func() {
-		zerolog.SetGlobalLevel(prev)
-	})
-
-	logger := newACPConnectionLogger(io.Discard)
-	if !logger.Enabled(context.Background(), slog.LevelInfo) {
-		t.Fatal("connection logger should enable info level when global level is debug")
-	}
-}
-
 func TestWireLogBufferSuppressesWirePayloadInDebug(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := zerolog.New(&logBuf).Level(zerolog.DebugLevel)
+	var logBuf testLogBuffer
+	logger := testLogger(&logBuf, slog.LevelDebug)
 
 	buf := newWireLogBuffer("send", logger, nil)
 	buf.logLine([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`))
@@ -405,8 +417,8 @@ func TestWireLogBufferSuppressesWirePayloadInDebug(t *testing.T) {
 }
 
 func TestWireLogBufferEmitsWirePayloadInTrace(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := zerolog.New(&logBuf).Level(zerolog.TraceLevel)
+	var logBuf testLogBuffer
+	logger := testLogger(&logBuf, levelTrace)
 
 	buf := newWireLogBuffer("recv", logger, nil)
 	buf.logLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
@@ -421,13 +433,13 @@ func TestWireLogBufferEmitsWirePayloadInTrace(t *testing.T) {
 }
 
 func TestClientCloseSuppressesExpectedProcessExitWarnings(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := zerolog.New(&logBuf).Level(zerolog.DebugLevel)
+	var logBuf testLogBuffer
+	logger := testSlogLogger(&logBuf, slog.LevelDebug)
 
 	client, err := NewClient(context.Background(), ClientConfig{
 		Command: helperCommand(t),
 		Stderr:  io.Discard,
-		Logger:  &logger,
+		Logger:  logger,
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
@@ -484,7 +496,7 @@ func TestClientHandlesPermissionRequest(t *testing.T) {
 
 	var chunks []string
 	for note := range updates {
-		ev, ok := mapACPUpdateToEvent(zerolog.Nop(), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
+		ev, ok := mapACPUpdateToEvent(newLogger(nil, ""), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
 		if ok {
 			if text := extractPromptText(ev.Content); text != "" {
 				chunks = append(chunks, text)
@@ -674,8 +686,8 @@ func TestClientPromptValidatesInputs(t *testing.T) {
 }
 
 func TestClientSessionUpdateCallbackLogsContentBlock(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := zerolog.New(&logBuf).Level(zerolog.TraceLevel)
+	var logBuf testLogBuffer
+	logger := testLogger(&logBuf, levelTrace)
 
 	client := &Client{logger: logger}
 	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
@@ -709,8 +721,8 @@ func TestClientSessionUpdateCallbackLogsContentBlock(t *testing.T) {
 }
 
 func TestClientLogsSessionUpdateAtTraceOnly(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := zerolog.New(&logBuf).Level(zerolog.DebugLevel)
+	var logBuf testLogBuffer
+	logger := testLogger(&logBuf, slog.LevelDebug)
 
 	client := &Client{
 		logger: logger,
@@ -735,8 +747,8 @@ func TestClientLogsSessionUpdateAtTraceOnly(t *testing.T) {
 }
 
 func TestClientLogsSessionUpdateAtTrace(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := zerolog.New(&logBuf).Level(zerolog.TraceLevel)
+	var logBuf testLogBuffer
+	logger := testLogger(&logBuf, levelTrace)
 
 	client := &Client{
 		logger: logger,
@@ -761,8 +773,8 @@ func TestClientLogsSessionUpdateAtTrace(t *testing.T) {
 }
 
 func TestClientLogsLastChunkInSeries(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := zerolog.New(&logBuf).Level(zerolog.DebugLevel)
+	var logBuf testLogBuffer
+	logger := testLogger(&logBuf, slog.LevelDebug)
 
 	client := &Client{
 		logger: logger,
@@ -804,7 +816,7 @@ func TestRequestPermissionPassesContextToHandler(t *testing.T) {
 
 	var seen string
 	c := &Client{
-		logger: zerolog.Nop(),
+		logger: newLogger(nil, ""),
 		permissionHandler: func(ctx context.Context, req acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 			seen, _ = ctx.Value(ctxKey).(string)
 			return acp.RequestPermissionResponse{Outcome: acp.NewRequestPermissionOutcomeCancelled()}, nil
@@ -2446,8 +2458,8 @@ func TestAgentSkipsInstructionPrependForStateSession(t *testing.T) {
 func TestAgentUsesStateSessionWhenSessionConfigChanges(t *testing.T) {
 	defaultWorkingDir := t.TempDir()
 	overrideWorkingDir := t.TempDir()
-	var bootstrapBuf bytes.Buffer
-	bootstrapLogger := zerolog.New(zerolog.SyncWriter(&bootstrapBuf)).Level(zerolog.DebugLevel)
+	var bootstrapBuf testLogBuffer
+	bootstrapLogger := testSlogLogger(&bootstrapBuf, slog.LevelDebug)
 
 	a, err := New(Config{
 		Context: context.Background(),
@@ -2455,7 +2467,7 @@ func TestAgentUsesStateSessionWhenSessionConfigChanges(t *testing.T) {
 			"GO_EXPECT_SESSION_CWD": defaultWorkingDir,
 		}),
 		WorkingDir: defaultWorkingDir,
-		Logger:     &bootstrapLogger,
+		Logger:     bootstrapLogger,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -2479,9 +2491,9 @@ func TestAgentUsesStateSessionWhenSessionConfigChanges(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	var invocationBuf bytes.Buffer
-	invocationLogger := zerolog.New(zerolog.SyncWriter(&invocationBuf)).Level(zerolog.DebugLevel).With().Str("source", "invocation").Logger()
-	invocationCtx := invocationLogger.WithContext(context.Background())
+	var invocationBuf testLogBuffer
+	invocationLogger := testSlogLogger(&invocationBuf, slog.LevelDebug).With("source", "invocation")
+	invocationCtx := contextWithLogger(context.Background(), newLogger(invocationLogger, ""))
 
 	first := collectFinalText(t, r.Run(invocationCtx, "test-user", sess.Session.ID(), genai.NewContentFromText("one", genai.RoleUser), agent.RunConfig{}))
 	second := collectFinalText(t, r.Run(
@@ -2876,14 +2888,14 @@ func TestMapACPUsageToUsageMetadata(t *testing.T) {
 }
 
 func TestAgentRunUsesInvocationLogger(t *testing.T) {
-	var bootstrapBuf bytes.Buffer
-	bootstrapLogger := zerolog.New(zerolog.SyncWriter(&bootstrapBuf)).Level(zerolog.DebugLevel)
+	var bootstrapBuf testLogBuffer
+	bootstrapLogger := testSlogLogger(&bootstrapBuf, slog.LevelDebug)
 
 	a, err := New(Config{
 		Context:    context.Background(),
 		Command:    helperCommand(t),
 		WorkingDir: t.TempDir(),
-		Logger:     &bootstrapLogger,
+		Logger:     bootstrapLogger,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -2910,9 +2922,9 @@ func TestAgentRunUsesInvocationLogger(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	var invocationBuf bytes.Buffer
-	invocationLogger := zerolog.New(zerolog.SyncWriter(&invocationBuf)).Level(zerolog.DebugLevel).With().Str("source", "invocation").Logger()
-	invocationCtx := invocationLogger.WithContext(context.Background())
+	var invocationBuf testLogBuffer
+	invocationLogger := testSlogLogger(&invocationBuf, slog.LevelDebug).With("source", "invocation")
+	invocationCtx := contextWithLogger(context.Background(), newLogger(invocationLogger, ""))
 
 	for _, runErr := range r.Run(invocationCtx, "test-user", sess.Session.ID(), genai.NewContentFromText("hello", genai.RoleUser), agent.RunConfig{}) {
 		if runErr != nil {
@@ -4072,7 +4084,7 @@ func readPromptOutput(t *testing.T, updates <-chan ExtendedSessionNotification, 
 	t.Helper()
 	var chunks []string
 	for note := range updates {
-		ev, ok := mapACPUpdateToEvent(zerolog.Nop(), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
+		ev, ok := mapACPUpdateToEvent(newLogger(nil, ""), "inv-1", ExtendedSessionNotification{SessionNotification: note.SessionNotification, Raw: note.Raw})
 		if ok {
 			if text := extractPromptText(ev.Content); text != "" {
 				chunks = append(chunks, text)
@@ -4087,7 +4099,7 @@ func readPromptOutput(t *testing.T, updates <-chan ExtendedSessionNotification, 
 }
 
 func TestMapACPPlanUpdate(t *testing.T) {
-	logger := zerolog.Nop()
+	logger := newLogger(nil, "")
 
 	tests := []struct {
 		name        string

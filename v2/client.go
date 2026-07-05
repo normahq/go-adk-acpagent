@@ -16,7 +16,6 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
-	"github.com/rs/zerolog"
 )
 
 var (
@@ -66,8 +65,8 @@ type ClientConfig struct {
 	Stderr io.Writer
 	// PermissionHandler decides how to respond to ACP permission requests.
 	PermissionHandler PermissionHandler
-	// Logger is the zerolog logger to use for this client.
-	Logger *zerolog.Logger
+	// Logger is the slog logger to use for this client.
+	Logger *slog.Logger
 }
 
 // ExtendedSessionNotification wraps an ACP notification with its raw JSON representation
@@ -89,7 +88,7 @@ type Client struct {
 	permissionHandler PermissionHandler
 	clientName        string
 	clientVersion     string
-	logger            zerolog.Logger
+	logger            logger
 
 	stateMu         sync.Mutex
 	activeBySession map[acp.SessionId]*activePrompt
@@ -108,7 +107,7 @@ type activePrompt struct {
 	sessionID acp.SessionId
 	updates   chan ExtendedSessionNotification
 	signal    chan struct{}
-	logger    zerolog.Logger
+	logger    logger
 	lastChunk *loggedACPChunk
 	closeOnce sync.Once
 }
@@ -139,10 +138,7 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		ctx = context.Background()
 	}
 
-	l := zerolog.Nop()
-	if cfg.Logger != nil {
-		l = cfg.Logger.With().Str("subcomponent", "acpagent.client").Logger()
-	}
+	l := newLogger(cfg.Logger, "acpagent.client")
 	clientName := strings.TrimSpace(cfg.ClientName)
 	if clientName == "" {
 		clientName = defaultClientName
@@ -201,30 +197,15 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	wireWriter := newWireLoggingWriter(stdin, l)
 	wireReader := newWireLoggingReader(stdout, l, c.enqueueUpdateFromWire)
 	c.conn = acp.NewClientSideConnection(c, wireWriter, wireReader)
-	c.conn.SetLogger(newACPConnectionLogger(stderr))
+	c.conn.SetLogger(l.slog())
 
 	go c.dispatchUpdates()
 	go c.waitLoop()
 	return c, nil
 }
 
-func newACPConnectionLogger(stderr io.Writer) *slog.Logger {
-	level := slog.LevelWarn
-	if zerolog.GlobalLevel() <= zerolog.DebugLevel {
-		level = slog.LevelDebug
-	}
-	return slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
-}
-
-func (c *Client) loggerForContext(ctx context.Context) zerolog.Logger {
-	if ctx == nil {
-		return c.logger
-	}
-	ctxLogger := zerolog.Ctx(ctx)
-	if ctxLogger == nil || ctxLogger == zerolog.DefaultContextLogger || ctxLogger.GetLevel() == zerolog.Disabled {
-		return c.logger
-	}
-	return ctxLogger.With().Str("subcomponent", "acpagent.client").Logger()
+func (c *Client) loggerForContext(ctx context.Context) logger {
+	return loggerFromContext(ctx, c.logger, "acpagent.client")
 }
 
 // Initialize performs ACP protocol initialization and validates protocol
@@ -913,9 +894,7 @@ func (c *Client) logLastChunkInSeries(sessionID acp.SessionId) {
 		last = &chunkCopy
 	}
 	if active != nil {
-		if active.logger.GetLevel() != zerolog.Disabled {
-			sessionLogger = active.logger
-		}
+		sessionLogger = active.logger
 	}
 	c.stateMu.Unlock()
 	if last == nil {
@@ -1006,9 +985,7 @@ func (c *Client) dispatchSessionUpdate(ext ExtendedSessionNotification) {
 
 	sessionLogger := c.logger
 	if active != nil {
-		if active.logger.GetLevel() != zerolog.Disabled {
-			sessionLogger = active.logger
-		}
+		sessionLogger = active.logger
 	}
 	logEvent := sessionLogger.Trace().
 		Str("acp_session_id", string(ext.SessionId)).
@@ -1075,7 +1052,7 @@ func sessionUpdateKind(update acp.SessionUpdate) string {
 	}
 }
 
-func logACPUpdateContentFields(event *zerolog.Event, update acp.SessionUpdate) {
+func logACPUpdateContentFields(event *logEvent, update acp.SessionUpdate) {
 	if event == nil {
 		return
 	}
@@ -1089,7 +1066,7 @@ func logACPUpdateContentFields(event *zerolog.Event, update acp.SessionUpdate) {
 	}
 }
 
-func logACPUpdateChunkFields(event *zerolog.Event, update acp.SessionUpdate) {
+func logACPUpdateChunkFields(event *logEvent, update acp.SessionUpdate) {
 	if event == nil {
 		return
 	}
@@ -1157,7 +1134,7 @@ type wireLoggingWriter struct {
 	buffer *wireLogBuffer
 }
 
-func newWireLoggingWriter(writer io.Writer, logger zerolog.Logger) io.Writer {
+func newWireLoggingWriter(writer io.Writer, logger logger) io.Writer {
 	return &wireLoggingWriter{writer: writer, buffer: newWireLogBuffer("send", logger, nil)}
 }
 
@@ -1177,7 +1154,7 @@ type wireLoggingReader struct {
 	buffer *wireLogBuffer
 }
 
-func newWireLoggingReader(reader io.Reader, logger zerolog.Logger, onSessionUpdate func(ExtendedSessionNotification)) io.Reader {
+func newWireLoggingReader(reader io.Reader, logger logger, onSessionUpdate func(ExtendedSessionNotification)) io.Reader {
 	return &wireLoggingReader{reader: reader, buffer: newWireLogBuffer("recv", logger, onSessionUpdate)}
 }
 
@@ -1194,14 +1171,14 @@ func (r *wireLoggingReader) Read(p []byte) (int, error) {
 
 type wireLogBuffer struct {
 	direction string
-	logger    zerolog.Logger
+	logger    logger
 	onUpdate  func(ExtendedSessionNotification)
 
 	mu  sync.Mutex
 	buf []byte
 }
 
-func newWireLogBuffer(direction string, logger zerolog.Logger, onUpdate func(ExtendedSessionNotification)) *wireLogBuffer {
+func newWireLogBuffer(direction string, logger logger, onUpdate func(ExtendedSessionNotification)) *wireLogBuffer {
 	return &wireLogBuffer{direction: direction, logger: logger, onUpdate: onUpdate}
 }
 

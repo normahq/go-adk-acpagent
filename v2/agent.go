@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,7 +20,6 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/normahq/go-adk-acpagent/v2/acperror"
-	"github.com/rs/zerolog"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
@@ -82,8 +82,8 @@ type Config struct {
 	Stderr io.Writer
 	// PermissionHandler decides how to respond to ACP permission requests.
 	PermissionHandler PermissionHandler
-	// Logger is the zerolog logger to use for this agent.
-	Logger *zerolog.Logger
+	// Logger is the slog logger to use for this agent.
+	Logger *slog.Logger
 	// MCPServers is the map of MCP server configurations.
 	MCPServers map[string]MCPServerConfig
 	// SessionService is ignored. ACP session bindings are recorded through the
@@ -110,7 +110,7 @@ type Agent struct {
 	globalInstruction         string
 	instructionProvider       InstructionProvider
 	globalInstructionProvider InstructionProvider
-	logger                    zerolog.Logger
+	logger                    logger
 	mcpServers                []acp.McpServer
 }
 
@@ -242,10 +242,7 @@ func New(cfg Config) (*Agent, error) {
 		cfg.Description = defaultAgentDescription
 	}
 
-	l := zerolog.Nop()
-	if cfg.Logger != nil {
-		l = cfg.Logger.With().Str("subcomponent", "acpagent.agent").Logger()
-	}
+	l := newLogger(cfg.Logger, "acpagent.agent")
 
 	client, err := NewClient(ctx, ClientConfig{
 		Command:           cfg.Command,
@@ -413,7 +410,7 @@ func prependInstructionsToPrompt(instructions string, prompt string) string {
 func (a *Agent) runPromptOnce(
 	ctx adkagent.InvocationContext,
 	logCtx context.Context,
-	logger zerolog.Logger,
+	logger logger,
 	remoteSessionID string,
 	prompt string,
 ) (promptRunResult, error) {
@@ -584,26 +581,19 @@ func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID s
 	event.Actions.StateDelta[SessionStateKey] = buildACPState(remoteSessionID, metaJSON)
 }
 
-func (a *Agent) invocationLogger(ctx context.Context) zerolog.Logger {
-	if ctx == nil {
-		return a.logger
-	}
-	ctxLogger := zerolog.Ctx(ctx)
-	if ctxLogger == nil || ctxLogger == zerolog.DefaultContextLogger || ctxLogger.GetLevel() == zerolog.Disabled {
-		return a.logger
-	}
-	return ctxLogger.With().Str("subcomponent", "acpagent.agent").Logger()
+func (a *Agent) invocationLogger(ctx context.Context) logger {
+	return loggerFromContext(ctx, a.logger, "acpagent.agent")
 }
 
-func (a *Agent) sessionLogger(ctx context.Context, base zerolog.Logger, adkSessionID string) (context.Context, zerolog.Logger) {
-	logger := base.With().
-		Str("session_id", adkSessionID).
-		Str("adk_session_id", adkSessionID).
-		Logger()
-	return logger.WithContext(ctx), logger
+func (a *Agent) sessionLogger(ctx context.Context, base logger, adkSessionID string) (context.Context, logger) {
+	logger := base.with(
+		"session_id", adkSessionID,
+		"adk_session_id", adkSessionID,
+	)
+	return contextWithLogger(ctx, logger), logger
 }
 
-func (a *Agent) logADKEvent(logger zerolog.Logger, ev *session.Event, msg string) {
+func (a *Agent) logADKEvent(logger logger, ev *session.Event, msg string) {
 	if ev == nil {
 		return
 	}
@@ -679,7 +669,7 @@ func mapACPLegacyUsageToUsageMetadata(usage map[string]any) *genai.GenerateConte
 	return m
 }
 
-func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger zerolog.Logger) (remoteSession, error) {
+func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger) (remoteSession, error) {
 	cfg, err := a.resolveSessionConfig(ctx)
 	if err != nil {
 		return remoteSession{}, err
@@ -708,7 +698,7 @@ func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 func (a *Agent) recoverRemoteSession(
 	ctx adkagent.InvocationContext,
 	logCtx context.Context,
-	logger zerolog.Logger,
+	logger logger,
 	promptErr error,
 ) (remoteSession, error) {
 	cfg, err := a.resolveSessionConfig(ctx)
@@ -763,7 +753,7 @@ func (a *Agent) recoverRemoteSession(
 func (a *Agent) createRemoteSession(
 	ctx adkagent.InvocationContext,
 	logCtx context.Context,
-	logger zerolog.Logger,
+	logger logger,
 	cfg acpSessionConfig,
 	firstPromptInstructions string,
 ) (remoteSession, error) {
@@ -785,7 +775,7 @@ func (a *Agent) createRemoteSession(
 }
 
 func (a *Agent) logBoundRemoteSession(
-	logger zerolog.Logger,
+	logger logger,
 	message string,
 	remoteSessionID string,
 	cwd string,
@@ -1448,7 +1438,7 @@ func headersToHttpHeaders(headers map[string]string) []acp.HttpHeader {
 	return h
 }
 
-func mapACPUpdateToEvent(ctx context.Context, logger zerolog.Logger, invocationID string, ext ExtendedSessionNotification) (*session.Event, bool) {
+func mapACPUpdateToEvent(ctx context.Context, logger logger, invocationID string, ext ExtendedSessionNotification) (*session.Event, bool) {
 	update := ext.Update
 	switch {
 	case update.UserMessageChunk != nil:
@@ -1507,7 +1497,7 @@ func mapACPUpdateToEvent(ctx context.Context, logger zerolog.Logger, invocationI
 	}
 }
 
-func mapACPLegacyUsageUpdate(ctx context.Context, logger zerolog.Logger, invocationID string, update map[string]any) (*session.Event, bool) {
+func mapACPLegacyUsageUpdate(ctx context.Context, logger logger, invocationID string, update map[string]any) (*session.Event, bool) {
 	usage := mapACPLegacyUsageToUsageMetadata(update)
 	if usage == nil {
 		logger.Debug().Interface("update", update).Msg("ignoring usage_update with no token counts")
@@ -1519,7 +1509,7 @@ func mapACPLegacyUsageUpdate(ctx context.Context, logger zerolog.Logger, invocat
 	return ev, true
 }
 
-func mapACPAgentMessageChunk(ctx context.Context, logger zerolog.Logger, invocationID string, chunk *acp.SessionUpdateAgentMessageChunk) (*session.Event, bool) {
+func mapACPAgentMessageChunk(ctx context.Context, logger logger, invocationID string, chunk *acp.SessionUpdateAgentMessageChunk) (*session.Event, bool) {
 	part, ok := mapACPContentBlockToPart(logger, chunk.Content)
 	if !ok {
 		return nil, false
@@ -1557,7 +1547,7 @@ func copyACPProviderErrorMetadata(ev *session.Event, meta map[string]any) {
 	ev.CustomMetadata[acperror.ProviderErrorMetadataKey] = providerErr.Metadata()
 }
 
-func mapACPUserMessageChunk(ctx context.Context, logger zerolog.Logger, invocationID string, chunk *acp.SessionUpdateUserMessageChunk) (*session.Event, bool) {
+func mapACPUserMessageChunk(ctx context.Context, logger logger, invocationID string, chunk *acp.SessionUpdateUserMessageChunk) (*session.Event, bool) {
 	part, ok := mapACPContentBlockToPart(logger, chunk.Content)
 	if !ok {
 		return nil, false
@@ -1568,7 +1558,7 @@ func mapACPUserMessageChunk(ctx context.Context, logger zerolog.Logger, invocati
 	return ev, true
 }
 
-func mapACPAgentThoughtChunk(ctx context.Context, logger zerolog.Logger, invocationID string, chunk *acp.SessionUpdateAgentThoughtChunk) (*session.Event, bool) {
+func mapACPAgentThoughtChunk(ctx context.Context, logger logger, invocationID string, chunk *acp.SessionUpdateAgentThoughtChunk) (*session.Event, bool) {
 	part, ok := mapACPContentBlockToPart(logger, chunk.Content)
 	if !ok {
 		return nil, false
@@ -1628,7 +1618,7 @@ func mapACPToolCallUpdate(ctx context.Context, invocationID string, tool *acp.Se
 	return ev, true
 }
 
-func mapACPPlanUpdate(ctx context.Context, _ zerolog.Logger, invocationID string, plan *acp.SessionUpdatePlan) (*session.Event, bool) {
+func mapACPPlanUpdate(ctx context.Context, _ logger, invocationID string, plan *acp.SessionUpdatePlan) (*session.Event, bool) {
 	if plan == nil || len(plan.Entries) == 0 {
 		return nil, false
 	}
@@ -1648,7 +1638,7 @@ func mapACPPlanUpdate(ctx context.Context, _ zerolog.Logger, invocationID string
 	return ev, true
 }
 
-func mapACPContentBlockToPart(logger zerolog.Logger, block acp.ContentBlock) (*genai.Part, bool) {
+func mapACPContentBlockToPart(logger logger, block acp.ContentBlock) (*genai.Part, bool) {
 	if block.Text != nil {
 		if block.Text.Text == "" {
 			return nil, false
@@ -1737,7 +1727,7 @@ func decodeBase64(s string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s)
 }
 
-func marshalACPUpdatePayload(logger zerolog.Logger, payloadType string, v any) (string, bool) {
+func marshalACPUpdatePayload(logger logger, payloadType string, v any) (string, bool) {
 	raw, err := json.Marshal(v)
 	if err != nil {
 		logger.Debug().
@@ -1753,7 +1743,7 @@ func isACPToolStatusLongRunning(status acp.ToolCallStatus) bool {
 	return status == acp.ToolCallStatusPending || status == acp.ToolCallStatusInProgress
 }
 
-func logUnsupportedACPUpdate(logger zerolog.Logger, ext ExtendedSessionNotification) {
+func logUnsupportedACPUpdate(logger logger, ext ExtendedSessionNotification) {
 	updateType := extendedSessionUpdateType(ext)
 	logEvent := logger.Debug().
 		Str("acp_update_type", updateType)
@@ -1766,7 +1756,7 @@ func logUnsupportedACPUpdate(logger zerolog.Logger, ext ExtendedSessionNotificat
 	logEvent.Msg("ignoring unsupported acp session update")
 }
 
-func logIgnoredACPUpdate(logger zerolog.Logger, updateType string, payload any) {
+func logIgnoredACPUpdate(logger logger, updateType string, payload any) {
 	logEvent := logger.Debug().
 		Str("acp_update_type", updateType)
 
@@ -1792,7 +1782,7 @@ func extendedSessionUpdateType(ext ExtendedSessionNotification) string {
 	return unknownValue
 }
 
-func logIgnoredACPContentBlock(logger zerolog.Logger, block acp.ContentBlock) {
+func logIgnoredACPContentBlock(logger logger, block acp.ContentBlock) {
 	blockType := contentBlockType(block)
 	logEvent := logger.Debug().
 		Str("acp_content_block_type", blockType).
