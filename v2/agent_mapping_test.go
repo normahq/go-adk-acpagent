@@ -455,6 +455,28 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	if currentACPStateMatches(created.Session, "session-1", `{"a":1}`) {
 		t.Fatal("currentACPStateMatches(different meta) = true, want false")
 	}
+	agentForState := &Agent{}
+	if err := agentForState.persistRemoteSessionBinding(nil, "session-1", "{}", "model"); err != nil {
+		t.Fatalf("persistRemoteSessionBinding(nil ctx) error = %v, want nil", err)
+	}
+	if err := agentForState.persistRemoteSessionBinding(testInvocationContext{session: created.Session}, " ", "{}", "model"); err != nil {
+		t.Fatalf("persistRemoteSessionBinding(empty session) error = %v, want nil", err)
+	}
+	if err := agentForState.persistRemoteSessionBinding(testInvocationContext{session: created.Session}, "session-1", `{"a":1,"b":2}`, "model"); err != nil {
+		t.Fatalf("persistRemoteSessionBinding(matching state) error = %v", err)
+	}
+	wantLiveACPState := map[string]any{
+		"session_id":      "session-1",
+		"model_config_id": "model",
+		"meta":            map[string]any{"a": float64(1), "b": float64(2)},
+	}
+	liveACPState, err := created.Session.State().Get(SessionStateKey)
+	if err != nil {
+		t.Fatalf("State().Get(%q) error = %v", SessionStateKey, err)
+	}
+	if !reflect.DeepEqual(liveACPState, wantLiveACPState) {
+		t.Fatalf("live acp state = %#v, want %#v", liveACPState, wantLiveACPState)
+	}
 
 	(&Agent{outputKey: "out"}).persistSessionStateDelta(nil, "session-1", "{}", "")
 	(&Agent{outputKey: "out"}).maybeSaveOutputToState(nil, "text")
@@ -730,6 +752,71 @@ func TestAgentSessionConfigErrorBranches(t *testing.T) {
 	if _, err := (&Agent{workingDir: t.TempDir()}).resolveSessionConfig(testInvocationContext{session: badState.Session}); err == nil ||
 		!strings.Contains(err.Error(), "model_config_id must be a string") {
 		t.Fatalf("resolveSessionConfig(bad model_config_id) error = %v, want model_config_id string error", err)
+	}
+
+	resolveConfigErrorCases := []struct {
+		name    string
+		state   map[string]any
+		wantErr string
+	}{
+		{
+			name:    "bad cwd",
+			state:   map[string]any{CWDStateKey: 123},
+			wantErr: "must be a string",
+		},
+		{
+			name:    "bad acp state",
+			state:   map[string]any{SessionStateKey: "bad"},
+			wantErr: "must be an object",
+		},
+		{
+			name:    "bad meta",
+			state:   map[string]any{SessionStateKey: map[string]any{"meta": 1}},
+			wantErr: "meta must be an object",
+		},
+		{
+			name:    "bad session id",
+			state:   map[string]any{SessionStateKey: map[string]any{"session_id": 1}},
+			wantErr: "session_id must be a string",
+		},
+		{
+			name: "bad reasoning meta",
+			state: map[string]any{
+				SessionStateKey: map[string]any{"meta": map[string]any{"codex": 1}},
+			},
+			wantErr: "codex must be an object",
+		},
+	}
+	for _, tc := range resolveConfigErrorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			sessionWithState, err := sessionService.Create(context.Background(), &session.CreateRequest{
+				AppName: "test-app",
+				UserID:  "test-user",
+				State:   tc.state,
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			_, err = (&Agent{workingDir: t.TempDir(), reasoningEffort: "high"}).resolveSessionConfig(testInvocationContext{session: sessionWithState.Session})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("resolveSessionConfig() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	noACPState, err := sessionService.Create(context.Background(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+	})
+	if err != nil {
+		t.Fatalf("Create(no acp state) error = %v", err)
+	}
+	reasoningConfig, err := (&Agent{workingDir: t.TempDir(), reasoningEffort: "high"}).resolveSessionConfig(testInvocationContext{session: noACPState.Session})
+	if err != nil {
+		t.Fatalf("resolveSessionConfig(no acp state) error = %v", err)
+	}
+	if reasoningConfig.metaJSON == "{}" || !strings.Contains(reasoningConfig.metaJSON, "model_reasoning_effort") {
+		t.Fatalf("resolveSessionConfig(no acp state) metaJSON = %q, want reasoning effort", reasoningConfig.metaJSON)
 	}
 }
 
