@@ -3,7 +3,7 @@ module github.com/normahq/go-adk-acpagent
 go 1.26.4
 
 require (
-	github.com/coder/acp-go-sdk v0.12.2
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	google.golang.org/adk v1.3.0
 	google.golang.org/genai v1.57.0

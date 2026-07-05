@@ -45,6 +45,10 @@ type Config struct {
 	AfterAgentCallbacks []adkagent.AfterAgentCallback
 	// Model is the specific LLM model identifier to use.
 	Model string
+	// ModelConfigID is the ACP session config option id used to select Model.
+	// When empty, the adapter discovers a select option with category "model"
+	// from the ACP session response.
+	ModelConfigID string
 	// Mode is the ACP session mode identifier to use.
 	Mode string
 	// Instruction is the optional instruction applied to each invocation.
@@ -103,6 +107,7 @@ type Agent struct {
 	client                    *Client
 	workingDir                string
 	sessionModel              string
+	sessionModelConfigID      string
 	sessionMode               string
 	reasoningEffort           string
 	outputKey                 string
@@ -115,14 +120,16 @@ type Agent struct {
 }
 
 type acpSessionConfig struct {
-	sessionID string
-	cwd       string
-	meta      map[string]any
-	metaJSON  string
+	sessionID     string
+	modelConfigID string
+	cwd           string
+	meta          map[string]any
+	metaJSON      string
 }
 
 type remoteSession struct {
 	id                      string
+	modelConfigID           string
 	metaJSON                string
 	fresh                   bool
 	firstPromptInstructions string
@@ -271,6 +278,7 @@ func New(cfg Config) (*Agent, error) {
 		client:                    client,
 		workingDir:                cfg.WorkingDir,
 		sessionModel:              strings.TrimSpace(cfg.Model),
+		sessionModelConfigID:      strings.TrimSpace(cfg.ModelConfigID),
 		sessionMode:               strings.TrimSpace(cfg.Mode),
 		reasoningEffort:           strings.TrimSpace(cfg.ReasoningEffort),
 		outputKey:                 strings.TrimSpace(cfg.OutputKey),
@@ -334,7 +342,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 		}
 		stateEvent := session.NewEvent(ctx.InvocationID())
-		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON)
+		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.modelConfigID)
 		if len(stateEvent.Actions.StateDelta) > 0 {
 			a.logADKEvent(logger, stateEvent, "yielding acp session state event")
 			if !yield(stateEvent, nil) {
@@ -355,7 +363,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 				promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 			}
 			stateEvent := session.NewEvent(ctx.InvocationID())
-			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON)
+			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.modelConfigID)
 			if len(stateEvent.Actions.StateDelta) > 0 {
 				a.logADKEvent(logger, stateEvent, "yielding recovered acp session state event")
 				if !yield(stateEvent, nil) {
@@ -389,7 +397,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		if result.latestPlanSnapshot != nil {
 			ev.Actions.StateDelta[PlanStateKey] = result.latestPlanSnapshot
 		}
-		a.persistSessionStateDelta(ev, remote.id, remote.metaJSON)
+		a.persistSessionStateDelta(ev, remote.id, remote.metaJSON, remote.modelConfigID)
 		a.maybeSaveOutputToState(ev, result.finalOutput)
 		ev.TurnComplete = true
 		a.logADKEvent(logger, ev, "yielding final turn complete event")
@@ -570,7 +578,7 @@ func (a *Agent) maybeSaveOutputToState(event *session.Event, output string) {
 	event.Actions.StateDelta[a.outputKey] = output
 }
 
-func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID string, metaJSON string) {
+func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID, metaJSON, modelConfigID string) {
 	if event == nil || event.Partial || strings.TrimSpace(remoteSessionID) == "" {
 		return
 	}
@@ -578,7 +586,7 @@ func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID s
 	if event.Actions.StateDelta == nil {
 		event.Actions.StateDelta = make(map[string]any)
 	}
-	event.Actions.StateDelta[SessionStateKey] = buildACPState(remoteSessionID, metaJSON)
+	event.Actions.StateDelta[SessionStateKey] = buildACPStateWithModelConfigID(remoteSessionID, metaJSON, modelConfigID)
 }
 
 func (a *Agent) invocationLogger(ctx context.Context) logger {
@@ -679,10 +687,25 @@ func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 		logger.Debug().
 			Str("acp_session_id", cfg.sessionID).
 			Msg("using acp session id from adk session state")
-		if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON); err != nil {
+		appliedModelConfigID, err := a.client.applySessionModelAndMode(
+			logCtx,
+			cfg.sessionID,
+			a.sessionModel,
+			cfg.modelConfigID,
+			a.sessionMode,
+			nil,
+			nil,
+		)
+		if err != nil {
 			return remoteSession{}, err
 		}
-		return remoteSession{id: cfg.sessionID, metaJSON: cfg.metaJSON}, nil
+		if appliedModelConfigID != "" {
+			cfg.modelConfigID = appliedModelConfigID
+		}
+		if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.modelConfigID); err != nil {
+			return remoteSession{}, err
+		}
+		return remoteSession{id: cfg.sessionID, modelConfigID: cfg.modelConfigID, metaJSON: cfg.metaJSON}, nil
 	}
 	instructions, err := a.resolveInstructionParts(ctx)
 	if err != nil {
@@ -708,24 +731,36 @@ func (a *Agent) recoverRemoteSession(
 	if cfg.sessionID != "" && a.client.SupportsSessionResume() {
 		resumeResp, err := a.client.ResumeSessionWithMeta(logCtx, cfg.sessionID, cfg.cwd, a.mcpServers, cfg.meta)
 		if err == nil {
-			if err := a.client.applySessionModelAndMode(logCtx, cfg.sessionID, a.sessionModel, a.sessionMode, resumeResp.Models, resumeResp.Modes); err != nil {
+			appliedModelConfigID, err := a.client.applySessionModelAndMode(
+				logCtx,
+				cfg.sessionID,
+				a.sessionModel,
+				cfg.modelConfigID,
+				a.sessionMode,
+				resumeResp.ConfigOptions,
+				resumeResp.Modes,
+			)
+			if err != nil {
 				return remoteSession{}, err
+			}
+			if appliedModelConfigID != "" {
+				cfg.modelConfigID = appliedModelConfigID
 			}
 			a.logBoundRemoteSession(logger, "resumed acp session after prompt failure", cfg.sessionID, cfg.cwd, cfg.metaJSON)
-			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON); err != nil {
+			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.modelConfigID); err != nil {
 				return remoteSession{}, err
 			}
-			return remoteSession{id: cfg.sessionID, metaJSON: cfg.metaJSON}, nil
+			return remoteSession{id: cfg.sessionID, modelConfigID: cfg.modelConfigID, metaJSON: cfg.metaJSON}, nil
 		}
 		if isACPSessionAlreadyExistsError(err) {
 			logger.Debug().
 				Err(err).
 				Str("acp_session_id", cfg.sessionID).
 				Msg("acp session already active after prompt failure")
-			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON); err != nil {
+			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.modelConfigID); err != nil {
 				return remoteSession{}, err
 			}
-			return remoteSession{id: cfg.sessionID, metaJSON: cfg.metaJSON}, nil
+			return remoteSession{id: cfg.sessionID, modelConfigID: cfg.modelConfigID, metaJSON: cfg.metaJSON}, nil
 		}
 		if !isACPSessionNotFoundError(err) {
 			return remoteSession{}, fmt.Errorf("resume acp session %q after prompt failure: %w", cfg.sessionID, err)
@@ -757,17 +792,33 @@ func (a *Agent) createRemoteSession(
 	cfg acpSessionConfig,
 	firstPromptInstructions string,
 ) (remoteSession, error) {
-	resp, err := a.client.CreateSessionWithMeta(logCtx, cfg.cwd, a.sessionModel, a.sessionMode, a.mcpServers, cfg.meta)
+	resp, err := a.client.NewSessionWithMeta(logCtx, cfg.cwd, a.mcpServers, cfg.meta)
 	if err != nil {
 		return remoteSession{}, err
 	}
 	sessionID := string(resp.SessionId)
+	appliedModelConfigID, err := a.client.applySessionModelAndMode(
+		logCtx,
+		sessionID,
+		a.sessionModel,
+		cfg.modelConfigID,
+		a.sessionMode,
+		resp.ConfigOptions,
+		resp.Modes,
+	)
+	if err != nil {
+		return remoteSession{}, err
+	}
+	if appliedModelConfigID != "" {
+		cfg.modelConfigID = appliedModelConfigID
+	}
 	a.logBoundRemoteSession(logger, "created new acp session for adk session", sessionID, cfg.cwd, cfg.metaJSON)
-	if err := a.persistRemoteSessionBinding(ctx, sessionID, cfg.metaJSON); err != nil {
+	if err := a.persistRemoteSessionBinding(ctx, sessionID, cfg.metaJSON, cfg.modelConfigID); err != nil {
 		return remoteSession{}, err
 	}
 	return remoteSession{
 		id:                      sessionID,
+		modelConfigID:           cfg.modelConfigID,
 		metaJSON:                cfg.metaJSON,
 		fresh:                   true,
 		firstPromptInstructions: strings.TrimSpace(firstPromptInstructions),
@@ -795,8 +846,15 @@ func (a *Agent) logBoundRemoteSession(
 }
 
 func buildACPState(remoteSessionID, metaJSON string) map[string]any {
+	return buildACPStateWithModelConfigID(remoteSessionID, metaJSON, "")
+}
+
+func buildACPStateWithModelConfigID(remoteSessionID, metaJSON, modelConfigID string) map[string]any {
 	acpState := map[string]any{
 		"session_id": remoteSessionID,
+	}
+	if strings.TrimSpace(modelConfigID) != "" {
+		acpState["model_config_id"] = strings.TrimSpace(modelConfigID)
 	}
 	if strings.TrimSpace(metaJSON) == "" || metaJSON == "{}" {
 		return acpState
@@ -812,12 +870,13 @@ func (a *Agent) persistRemoteSessionBinding(
 	ctx adkagent.InvocationContext,
 	remoteSessionID string,
 	metaJSON string,
+	modelConfigID string,
 ) error {
 	if ctx == nil || ctx.Session() == nil || strings.TrimSpace(remoteSessionID) == "" {
 		return nil
 	}
 
-	acpState := buildACPState(remoteSessionID, metaJSON)
+	acpState := buildACPStateWithModelConfigID(remoteSessionID, metaJSON, modelConfigID)
 	if currentACPStateMatches(ctx.Session(), remoteSessionID, metaJSON) {
 		if err := ctx.Session().State().Set(SessionStateKey, cloneAnyMap(acpState)); err != nil {
 			return fmt.Errorf("set live acp session state: %w", err)
@@ -884,7 +943,8 @@ func normalizeACPStateMetaJSONFromRaw(raw string) string {
 
 func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSessionConfig, error) {
 	cfg := acpSessionConfig{
-		cwd: strings.TrimSpace(a.workingDir),
+		cwd:           strings.TrimSpace(a.workingDir),
+		modelConfigID: strings.TrimSpace(a.sessionModelConfigID),
 	}
 	rawCWD, err := ctx.Session().State().Get(CWDStateKey)
 	if err != nil {
@@ -928,6 +988,15 @@ func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSession
 			return acpSessionConfig{}, fmt.Errorf("adk session state %q.session_id must be a string; got %T", SessionStateKey, rawSessionID)
 		}
 		cfg.sessionID = strings.TrimSpace(sessionID)
+	}
+	if rawModelConfigID, ok := state["model_config_id"]; ok {
+		modelConfigID, ok := rawModelConfigID.(string)
+		if !ok {
+			return acpSessionConfig{}, fmt.Errorf("adk session state %q.model_config_id must be a string; got %T", SessionStateKey, rawModelConfigID)
+		}
+		if cfg.modelConfigID == "" {
+			cfg.modelConfigID = strings.TrimSpace(modelConfigID)
+		}
 	}
 	cfg, err = addReasoningEffortToSessionConfig(cfg, a.reasoningEffort)
 	if err != nil {

@@ -187,10 +187,11 @@ func TestClientCreateSessionSetsModel(t *testing.T) {
 	}
 }
 
-func TestClientCreateSessionIgnoresSetModelUnsupported(t *testing.T) {
+func TestClientCreateSessionFailsOnSetConfigOptionUnsupported(t *testing.T) {
 	client, err := NewClient(context.Background(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
-			"GO_DISABLE_SET_MODEL": "1",
+			"GO_DISABLE_SET_CONFIG_OPTION": "1",
+			"GO_EXPECT_SESSION_MODEL":      "openai/gpt-5.4",
 		}),
 	})
 	if err != nil {
@@ -201,16 +202,12 @@ func TestClientCreateSessionIgnoresSetModelUnsupported(t *testing.T) {
 	if _, err := client.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	sess, err := client.CreateSession(context.Background(), t.TempDir(), "openai/gpt-5.4", "", nil)
-	if err != nil {
-		t.Fatalf("CreateSession() error = %v", err)
-	}
-	if got := strings.TrimSpace(string(sess.SessionId)); got == "" {
-		t.Fatal("CreateSession() returned empty session id")
+	if _, err := client.CreateSession(context.Background(), t.TempDir(), "openai/gpt-5.4", "", nil); err == nil {
+		t.Fatal("CreateSession() error = nil, want set config option error")
 	}
 }
 
-func TestClientCreateSessionFailsOnSetModelRequestError(t *testing.T) {
+func TestClientCreateSessionFailsOnSetModelConfigOptionRequestError(t *testing.T) {
 	client, err := NewClient(context.Background(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
 			"GO_EXPECT_SESSION_MODEL": "different/model",
@@ -227,6 +224,30 @@ func TestClientCreateSessionFailsOnSetModelRequestError(t *testing.T) {
 	_, err = client.CreateSession(context.Background(), t.TempDir(), "openai/gpt-5.4", "", nil)
 	if err == nil {
 		t.Fatal("CreateSession() error = nil, want set model error")
+	}
+}
+
+func TestClientCreateSessionUsesCustomModelConfigID(t *testing.T) {
+	client, err := NewClient(context.Background(), ClientConfig{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_EXPECT_MODEL_CONFIG_ID": "provider.model",
+			"GO_EXPECT_SESSION_MODEL":   "openai/gpt-5.4",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	resp, err := client.NewSessionWithMeta(context.Background(), t.TempDir(), nil, nil)
+	if err != nil {
+		t.Fatalf("NewSessionWithMeta() error = %v", err)
+	}
+	if _, err := client.applySessionModelAndMode(context.Background(), string(resp.SessionId), "openai/gpt-5.4", "provider.model", "", resp.ConfigOptions, resp.Modes); err != nil {
+		t.Fatalf("applySessionModelAndMode() error = %v", err)
 	}
 }
 
@@ -937,6 +958,41 @@ func TestAgentReusesRemoteSession(t *testing.T) {
 	}
 	if second != testSessionOneTwo {
 		t.Fatalf("second final text = %q, want session-1:two", second)
+	}
+}
+
+func TestAgentAppliesModelConfigOption(t *testing.T) {
+	a, err := New(Config{
+		Context:    context.Background(),
+		Command:    helperCommandWithEnv(t, map[string]string{"GO_EXPECT_SESSION_MODEL": "openai/gpt-5.4"}),
+		Model:      "openai/gpt-5.4",
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	sessionService := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{
+		AppName:        "test-app",
+		Agent:          a,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	sess, err := sessionService.Create(context.Background(), &session.CreateRequest{AppName: "test-app", UserID: "test-user"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	finalText, finalSessionState := collectFinalTextAndSessionState(t, r.Run(context.Background(), "test-user", sess.Session.ID(), genai.NewContentFromText("hello", genai.RoleUser), agent.RunConfig{}))
+	if finalText != testSessionOneHello {
+		t.Fatalf("final text = %q, want %q", finalText, testSessionOneHello)
+	}
+	if got := finalSessionState["model_config_id"]; got != "model" {
+		t.Fatalf("final %s.model_config_id = %v, want model", SessionStateKey, got)
 	}
 }
 
@@ -3524,6 +3580,10 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	expectedClientName := os.Getenv("GO_EXPECT_CLIENT_NAME")
 	expectedClientVersion := os.Getenv("GO_EXPECT_CLIENT_VERSION")
 	expectedSessionModel := os.Getenv("GO_EXPECT_SESSION_MODEL")
+	expectedModelConfigID := os.Getenv("GO_EXPECT_MODEL_CONFIG_ID")
+	if expectedModelConfigID == "" {
+		expectedModelConfigID = "model"
+	}
 	expectedSessionMode := os.Getenv("GO_EXPECT_SESSION_MODE")
 	expectedMCPServers := os.Getenv("GO_EXPECT_MCP_SERVERS")
 	expectedMCPServersRaw := os.Getenv("GO_EXPECT_MCP_SERVERS_RAW")
@@ -3540,7 +3600,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	supportLoadSession := os.Getenv("GO_SUPPORT_LOAD_SESSION") == "1"
 	expectedPromptsRaw := os.Getenv("GO_EXPECT_PROMPTS")
 	forceNewSessionID := os.Getenv("GO_FORCE_NEW_SESSION_ID")
-	disableSetModel := os.Getenv("GO_DISABLE_SET_MODEL") == "1"
+	disableSetConfigOption := os.Getenv("GO_DISABLE_SET_CONFIG_OPTION") == "1"
 	disableSetMode := os.Getenv("GO_DISABLE_SET_MODE") == "1"
 	failResumeMethodNotFound := os.Getenv("GO_FAIL_RESUME_METHOD_NOT_FOUND") == "1"
 	failResumeEntityNotFound := os.Getenv("GO_FAIL_RESUME_ENTITY_NOT_FOUND") == "1"
@@ -3705,7 +3765,13 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			})
 			return
 		}
-		writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperSessionRestoreResponse{})})
+		writeEnvelope(stdout, helperEnvelope{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result: mustJSON(helperSessionRestoreResponse{
+				ConfigOptions: helperModelConfigOptions(expectedSessionModel, expectedModelConfigID),
+			}),
+		})
 	}
 
 	for scanner.Scan() {
@@ -3841,7 +3907,14 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			if forceNewSessionID != "" {
 				sessionID = forceNewSessionID
 			}
-			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperNewSessionResponse{SessionID: sessionID})})
+			writeEnvelope(stdout, helperEnvelope{
+				JSONRPC: "2.0",
+				ID:      msg.ID,
+				Result: mustJSON(helperNewSessionResponse{
+					SessionID:     sessionID,
+					ConfigOptions: helperModelConfigOptions(expectedSessionModel, expectedModelConfigID),
+				}),
+			})
 		case acp.AgentMethodSessionResume:
 			handleSessionRestore(
 				msg,
@@ -3862,8 +3935,8 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				failLoadMethodNotFound,
 				failLoadEntityNotFound,
 			)
-		case acp.AgentMethodSessionSetModel:
-			if disableSetModel {
+		case acp.AgentMethodSessionSetConfigOption:
+			if disableSetConfigOption {
 				writeEnvelope(stdout, helperEnvelope{
 					JSONRPC: "2.0",
 					ID:      msg.ID,
@@ -3871,17 +3944,25 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				})
 				continue
 			}
-			var req helperSetSessionModelRequest
+			var req helperSetSessionConfigOptionRequest
 			must(json.Unmarshal(msg.Params, &req))
-			if expectedSessionModel != "" && req.ModelID != expectedSessionModel {
+			if expectedModelConfigID != "" && req.ConfigID != expectedModelConfigID {
 				writeEnvelope(stdout, helperEnvelope{
 					JSONRPC: "2.0",
 					ID:      msg.ID,
-					Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected session model: %s", req.ModelID)},
+					Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected session config id: %s", req.ConfigID)},
 				})
 				continue
 			}
-			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperSetSessionModelResponse{})})
+			if expectedSessionModel != "" && req.Value != expectedSessionModel {
+				writeEnvelope(stdout, helperEnvelope{
+					JSONRPC: "2.0",
+					ID:      msg.ID,
+					Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected session model: %s", req.Value)},
+				})
+				continue
+			}
+			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperSetSessionConfigOptionResponse{ConfigOptions: helperModelConfigOptions(req.Value, req.ConfigID)})})
 		case acp.AgentMethodSessionSetMode:
 			if disableSetMode {
 				writeEnvelope(stdout, helperEnvelope{
@@ -4179,7 +4260,8 @@ type helperAuthenticateRequest struct {
 type helperAuthenticateResponse struct{}
 
 type helperNewSessionResponse struct {
-	SessionID string `json:"sessionId"`
+	ConfigOptions []acp.SessionConfigOption `json:"configOptions,omitempty"`
+	SessionID     string                    `json:"sessionId"`
 }
 
 type helperNewSessionRequest struct {
@@ -4195,18 +4277,42 @@ type helperSessionRestoreRequest struct {
 	SessionID  string          `json:"sessionId"`
 }
 
-type helperSessionRestoreResponse struct{}
+type helperSessionRestoreResponse struct {
+	ConfigOptions []acp.SessionConfigOption `json:"configOptions,omitempty"`
+}
 
 type helperPromptResponse struct {
 	StopReason string `json:"stopReason"`
 }
 
-type helperSetSessionModelRequest struct {
+type helperSetSessionConfigOptionRequest struct {
 	SessionID string `json:"sessionId"`
-	ModelID   string `json:"modelId"`
+	ConfigID  string `json:"configId"`
+	Value     string `json:"value"`
 }
 
-type helperSetSessionModelResponse struct{}
+type helperSetSessionConfigOptionResponse struct {
+	ConfigOptions []acp.SessionConfigOption `json:"configOptions"`
+}
+
+func helperModelConfigOptions(model, configID string) []acp.SessionConfigOption {
+	if strings.TrimSpace(model) == "" {
+		return nil
+	}
+	modelCategory := acp.SessionConfigOptionCategoryModel
+	option := acp.NewSessionConfigOptionSelect(
+		acp.SessionConfigValueId(model),
+		acp.SessionConfigSelectOptions{
+			Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
+				{Name: model, Value: acp.SessionConfigValueId(model)},
+			},
+		},
+	)
+	option.Select.Id = acp.SessionConfigId(configID)
+	option.Select.Name = "Model"
+	option.Select.Category = &modelCategory
+	return []acp.SessionConfigOption{option}
+}
 
 type helperSetSessionModeRequest struct {
 	SessionID string `json:"sessionId"`

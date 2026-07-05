@@ -246,21 +246,66 @@ func TestAgentConstructorClosesClientAfterMCPConversionFailure(t *testing.T) {
 	}
 }
 
-func TestClientSetSessionModelAndModeValidation(t *testing.T) {
+func TestClientSetSessionModeValidation(t *testing.T) {
 	t.Parallel()
 
 	client := &Client{logger: newLogger(nil, "")}
-	if err := client.SetSessionModel(context.Background(), "", "model"); !errors.Is(err, errSessionIDRequired) {
-		t.Fatalf("SetSessionModel(empty session) error = %v, want errSessionIDRequired", err)
-	}
-	if err := client.SetSessionModel(context.Background(), "session-1", " "); !errors.Is(err, errModelRequired) {
-		t.Fatalf("SetSessionModel(empty model) error = %v, want errModelRequired", err)
-	}
 	if err := client.SetSessionMode(context.Background(), "", "mode"); !errors.Is(err, errSessionIDRequired) {
 		t.Fatalf("SetSessionMode(empty session) error = %v, want errSessionIDRequired", err)
 	}
 	if err := client.SetSessionMode(context.Background(), "session-1", " "); !errors.Is(err, errModeRequired) {
 		t.Fatalf("SetSessionMode(empty mode) error = %v, want errModeRequired", err)
+	}
+}
+
+func TestResolveModelConfigID(t *testing.T) {
+	t.Parallel()
+
+	modelCategory := acp.SessionConfigOptionCategoryModel
+	tests := []struct {
+		name     string
+		configID string
+		options  []acp.SessionConfigOption
+		want     string
+		wantErr  bool
+	}{
+		{name: "explicit", configID: "provider.model", want: "provider.model"},
+		{
+			name: "category",
+			options: []acp.SessionConfigOption{{
+				Select: &acp.SessionConfigOptionSelect{
+					Id:       "preferred-model",
+					Category: &modelCategory,
+				},
+			}},
+			want: "preferred-model",
+		},
+		{
+			name: "id fallback",
+			options: []acp.SessionConfigOption{{
+				Select: &acp.SessionConfigOptionSelect{Id: "model"},
+			}},
+			want: "model",
+		},
+		{name: "missing", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveModelConfigID(tc.configID, tc.options)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("resolveModelConfigID() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveModelConfigID() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveModelConfigID() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

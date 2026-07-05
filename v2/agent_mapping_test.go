@@ -455,11 +455,11 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 		t.Fatal("currentACPStateMatches(different meta) = true, want false")
 	}
 
-	(&Agent{outputKey: "out"}).persistSessionStateDelta(nil, "session-1", "{}")
+	(&Agent{outputKey: "out"}).persistSessionStateDelta(nil, "session-1", "{}", "")
 	(&Agent{outputKey: "out"}).maybeSaveOutputToState(nil, "text")
 
 	emptyRemote := session.NewEvent(context.Background(), "inv-empty-remote")
-	(&Agent{outputKey: "out"}).persistSessionStateDelta(emptyRemote, " ", "{}")
+	(&Agent{outputKey: "out"}).persistSessionStateDelta(emptyRemote, " ", "{}", "")
 	if len(emptyRemote.Actions.StateDelta) != 0 {
 		t.Fatalf("empty remote StateDelta = %#v, want empty", emptyRemote.Actions.StateDelta)
 	}
@@ -472,7 +472,7 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 
 	partial := session.NewEvent(context.Background(), "inv-partial")
 	partial.Partial = true
-	(&Agent{outputKey: "out"}).persistSessionStateDelta(partial, "session-1", `{"x":1}`)
+	(&Agent{outputKey: "out"}).persistSessionStateDelta(partial, "session-1", `{"x":1}`, "")
 	(&Agent{outputKey: "out"}).maybeSaveOutputToState(partial, "text")
 	if len(partial.Actions.StateDelta) != 0 {
 		t.Fatalf("partial StateDelta = %#v, want empty", partial.Actions.StateDelta)
@@ -480,7 +480,7 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 
 	ev := session.NewEvent(context.Background(), "inv")
 	agent := &Agent{outputKey: "out"}
-	agent.persistSessionStateDelta(ev, "session-1", `{"x":1}`)
+	agent.persistSessionStateDelta(ev, "session-1", `{"x":1}`, "")
 	agent.maybeSaveOutputToState(ev, "visible")
 	wantACPState := map[string]any{"session_id": "session-1", "meta": map[string]any{"x": float64(1)}}
 	if !reflect.DeepEqual(ev.Actions.StateDelta[SessionStateKey], wantACPState) {

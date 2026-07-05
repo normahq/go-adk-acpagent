@@ -62,6 +62,12 @@ diagnostics. `Config.Stderr` is optional ACP subprocess stderr forwarding; set
 it to a file, buffer, `os.Stderr`, or `io.Discard` depending on how much raw
 provider stderr you want to keep.
 
+`Config.Model` selects an ACP session model through `session/set_config_option`.
+By default the adapter discovers a select config option with category `model`
+from `session/new` or `session/resume`; set `Config.ModelConfigID` when a
+provider uses a known custom config option id. The lower-level client API is
+`Client.SetSessionConfigOption`.
+
 ACP provider error metadata helpers are available from:
 
 ```go
@@ -74,7 +80,7 @@ ACP provider failures are projected onto ADK event `ErrorCode` and
 
 ## Session State
 
-Use `acpagent.CWDStateKey` (`"cwd"`) to override the ACP session working directory per ADK session. ACP session metadata is stored under `acpagent.SessionStateKey`, and ACP plan snapshots are stored under `acpagent.PlanStateKey`.
+Use `acpagent.CWDStateKey` (`"cwd"`) to override the ACP session working directory per ADK session. ACP session metadata is stored under `acpagent.SessionStateKey`, including the ACP `session_id`, optional `_meta`, and optional `model_config_id`. ACP plan snapshots are stored under `acpagent.PlanStateKey`.
 
 ## Tests
 
