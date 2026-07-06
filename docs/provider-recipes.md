@@ -51,19 +51,27 @@ agentRuntime, err := acpagent.New(acpagent.Config{
 Claude Code ACP is started through the Zed ACP wrapper. Keep the npm package
 version pinned in production if reproducibility matters.
 
-## PI
+## Pi
 
 ```go
 agentRuntime, err := acpagent.New(acpagent.Config{
-	Command:    []string{"pi-acp"},
+	Command:    []string{"npx", "-y", "pi-acp"},
 	WorkingDir: "/workspace",
 	Stderr:     os.Stderr,
 	Logger:     logger,
 })
 ```
 
-Replace `pi-acp` and model identifiers with the actual PI ACP stdio command and
-capability names.
+`pi-acp` is the ACP wrapper for the Pi coding agent. Install and configure Pi
+separately with `@earendil-works/pi-coding-agent`, then run the wrapper with
+`npx -y pi-acp`. If `pi-acp` is globally installed, `Command` can be
+`[]string{"pi-acp"}` instead.
+
+Pin the npm package version in production if reproducibility matters. Pi
+session model selection uses the ACP `model` config option with values
+advertised as `provider/model`. Pi thinking level uses the ACP `thought_level`
+config option with values `off`, `minimal`, `low`, `medium`, `high`, or
+`xhigh`.
 
 ## Generic ACP
 

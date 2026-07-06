@@ -7,7 +7,8 @@ when wiring the adapter into an ADK application.
 
 | Task | Start here |
 | --- | --- |
-| Understand lifecycle and event mapping | [Concepts](concepts.md) |
+| Understand lifecycle | [Concepts](concepts.md) |
+| Understand ACP-to-ADK event mapping | [Event mapping](event-mapping.md) |
 | Choose a provider command | [Provider recipes](provider-recipes.md) |
 | Manage cwd, session metadata, config values, plans, and output state | [Session state](session-state.md) |
 | Debug startup, JSON-RPC streams, permissions, and provider errors | [Troubleshooting](troubleshooting.md) |

@@ -83,6 +83,7 @@ func main() {
 | OpenCode | `[]string{"opencode", "acp"}` |
 | Codex | `[]string{"npx", "-y", "@normahq/codex-acp-bridge@latest"}` |
 | Claude Code | `[]string{"npx", "-y", "@zed-industries/claude-code-acp@latest"}` |
+| Pi | `[]string{"npx", "-y", "pi-acp"}` |
 | Generic ACP | Any executable that speaks ACP on stdin/stdout. |
 
 Runnable examples are available for [OpenCode](examples/opencode) and
@@ -113,7 +114,8 @@ import "github.com/normahq/go-adk-acpagent/acperror"
 
 | Task | Start here |
 | --- | --- |
-| Understand lifecycle and event mapping | [Concepts](docs/concepts.md) |
+| Understand lifecycle | [Concepts](docs/concepts.md) |
+| Understand ACP-to-ADK event mapping | [Event mapping](docs/event-mapping.md) |
 | Choose a provider command | [Provider recipes](docs/provider-recipes.md) |
 | Manage cwd, session metadata, config values, plans, and output state | [Session state](docs/session-state.md) |
 | Debug startup, JSON-RPC streams, permissions, and provider errors | [Troubleshooting](docs/troubleshooting.md) |

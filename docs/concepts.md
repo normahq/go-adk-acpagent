@@ -24,6 +24,9 @@ The package handles:
 - Optional session configuration through ACP session config options.
 - Optional MCP server forwarding to ACP `session/new` and `session/resume`.
 
+See [Event mapping](event-mapping.md) for the exact ACP update to ADK event
+contract.
+
 ## Why It Exists
 
 ACP standardizes communication between clients and coding agents. ADK
