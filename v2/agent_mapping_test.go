@@ -564,6 +564,58 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	}
 }
 
+func TestSessionConfigUpdateMappers(t *testing.T) {
+	t.Parallel()
+
+	if ev, ok := mapACPConfigOptionUpdate("inv-1", "session-1", &acp.SessionConfigOptionUpdate{
+		ConfigOptions: []acp.SessionConfigOption{{
+			Select: &acp.SessionConfigOptionSelect{
+				Id:           "model",
+				CurrentValue: "gpt-5-codex",
+			},
+		}},
+	}); !ok {
+		t.Fatal("mapACPConfigOptionUpdate() ok = false, want true")
+	} else {
+		want := map[string]any{
+			"session_id": "session-1",
+			"config_values": []map[string]string{
+				{"id": "model", "value": "gpt-5-codex"},
+			},
+		}
+		if !ev.Partial || !reflect.DeepEqual(ev.Actions.StateDelta[SessionStateKey], want) {
+			t.Fatalf("mapACPConfigOptionUpdate() state = %#v, partial = %v; want %#v true", ev.Actions.StateDelta[SessionStateKey], ev.Partial, want)
+		}
+	}
+
+	if ev, ok := mapACPCurrentModeUpdate("inv-2", "session-1", &acp.SessionCurrentModeUpdate{CurrentModeId: "coding"}); !ok {
+		t.Fatal("mapACPCurrentModeUpdate() ok = false, want true")
+	} else {
+		want := map[string]any{
+			"session_id": "session-1",
+			"config_values": []map[string]string{
+				{"id": "mode", "value": "coding"},
+			},
+		}
+		if !ev.Partial || !reflect.DeepEqual(ev.Actions.StateDelta[SessionStateKey], want) {
+			t.Fatalf("mapACPCurrentModeUpdate() state = %#v, partial = %v; want %#v true", ev.Actions.StateDelta[SessionStateKey], ev.Partial, want)
+		}
+	}
+
+	if ev, ok := mapACPConfigOptionUpdate("inv-3", "", &acp.SessionConfigOptionUpdate{}); ok || ev != nil {
+		t.Fatalf("mapACPConfigOptionUpdate(empty session) = (%#v, %v), want nil false", ev, ok)
+	}
+	if ev, ok := mapACPConfigOptionUpdate("inv-4", "session-1", &acp.SessionConfigOptionUpdate{}); ok || ev != nil {
+		t.Fatalf("mapACPConfigOptionUpdate(empty values) = (%#v, %v), want nil false", ev, ok)
+	}
+	if ev, ok := mapACPCurrentModeUpdate("inv-5", "session-1", &acp.SessionCurrentModeUpdate{}); ok || ev != nil {
+		t.Fatalf("mapACPCurrentModeUpdate(empty mode) = (%#v, %v), want nil false", ev, ok)
+	}
+	if ev, ok := mapACPCurrentModeUpdate("inv-6", "session-1", nil); ok || ev != nil {
+		t.Fatalf("mapACPCurrentModeUpdate(nil) = (%#v, %v), want nil false", ev, ok)
+	}
+}
+
 func TestAgentUpdateLoggingHelpers(t *testing.T) {
 	t.Parallel()
 

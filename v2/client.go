@@ -195,8 +195,10 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 
 	wireWriter := newWireLoggingWriter(stdin, l)
 	wireReader := newWireLoggingReader(stdout, l, c.enqueueUpdateFromWire)
-	c.conn = acp.NewClientSideConnection(c, wireWriter, wireReader)
+	gatedReader, releaseReader := newConnectionStartReader(wireReader)
+	c.conn = acp.NewClientSideConnection(c, wireWriter, gatedReader)
 	c.conn.SetLogger(l.slog())
+	releaseReader()
 
 	go c.dispatchUpdates()
 	go c.waitLoop()
@@ -1179,6 +1181,30 @@ type wireLoggingReader struct {
 
 func newWireLoggingReader(reader io.Reader, logger logger, onSessionUpdate func(ExtendedSessionNotification)) io.Reader {
 	return &wireLoggingReader{reader: reader, buffer: newWireLogBuffer("recv", logger, onSessionUpdate)}
+}
+
+func newConnectionStartReader(reader io.Reader) (io.Reader, func()) {
+	gated := &connectionStartReader{reader: reader, ready: make(chan struct{})}
+	return gated, gated.release
+}
+
+// connectionStartReader prevents the ACP SDK receive goroutine from reading
+// connection state before NewClient finishes installing the connection logger.
+type connectionStartReader struct {
+	reader io.Reader
+	ready  chan struct{}
+	once   sync.Once
+}
+
+func (r *connectionStartReader) Read(p []byte) (int, error) {
+	<-r.ready
+	return r.reader.Read(p)
+}
+
+func (r *connectionStartReader) release() {
+	r.once.Do(func() {
+		close(r.ready)
+	})
 }
 
 func (r *wireLoggingReader) Read(p []byte) (int, error) {

@@ -311,6 +311,39 @@ func TestSessionConfigOptionHelpers(t *testing.T) {
 func TestSessionConfigValueParsing(t *testing.T) {
 	t.Parallel()
 
+	for _, tc := range []struct {
+		name string
+		raw  any
+		want []SessionConfigValue
+	}{
+		{
+			name: "typed values",
+			raw:  []SessionConfigValue{{ID: " model ", Value: " gpt-5-codex "}, {ID: "", Value: "ignored"}},
+			want: []SessionConfigValue{{ID: "model", Value: "gpt-5-codex"}},
+		},
+		{
+			name: "string maps",
+			raw:  []map[string]string{{"id": "mode", "value": "coding"}},
+			want: []SessionConfigValue{{ID: "mode", Value: "coding"}},
+		},
+		{
+			name: "any maps",
+			raw:  []map[string]any{{"id": "thought_level", "value": "high"}},
+			want: []SessionConfigValue{{ID: "thought_level", Value: "high"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseSessionConfigValues(tc.raw)
+			if err != nil {
+				t.Fatalf("parseSessionConfigValues() error = %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseSessionConfigValues() = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+
 	got, err := parseSessionConfigValues([]any{
 		map[string]any{"id": "model", "value": "gpt-5-codex"},
 		map[string]any{"id": "mode", "value": "code"},
@@ -328,6 +361,16 @@ func TestSessionConfigValueParsing(t *testing.T) {
 	}
 	if _, err := parseSessionConfigValues(map[string]any{}); err == nil {
 		t.Fatal("parseSessionConfigValues(bad root) error = nil, want error")
+	}
+	for _, raw := range []any{
+		[]map[string]any{{"value": "missing-id"}},
+		[]map[string]any{{"id": 123, "value": "bad-id"}},
+		[]map[string]any{{"id": "model"}},
+		[]map[string]any{{"id": "model", "value": 123}},
+	} {
+		if _, err := parseSessionConfigValues(raw); err == nil {
+			t.Fatalf("parseSessionConfigValues(%#v) error = nil, want error", raw)
+		}
 	}
 }
 
