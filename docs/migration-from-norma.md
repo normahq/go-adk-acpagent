@@ -19,12 +19,6 @@ with:
 import "github.com/normahq/go-adk-acpagent"
 ```
 
-For ADK v2:
-
-```go
-import "github.com/normahq/go-adk-acpagent/v2"
-```
-
 ## API Compatibility
 
 The compatibility wrapper aliases the main adapter types and constants:

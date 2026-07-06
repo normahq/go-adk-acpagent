@@ -33,5 +33,5 @@ func main() {
 		}
 	}()
 
-	// Pass agentRuntime to an ADK v2 runner.
+	// Pass agentRuntime to an ADK runner.
 }

@@ -88,8 +88,7 @@ ACP provider failures are projected onto ADK event `ErrorCode` and
 
 Runnable examples are included under:
 
-- [`examples/codex`](examples/codex) for this ADK v2 module
-- [`../examples/codex`](../examples/codex) for the root ADK v1 module
+- [`examples/codex`](examples/codex)
 
 The examples show the production defaults expected by this adapter: pass a
 request-scoped context to construction, configure a structured `slog.Logger`,
@@ -98,7 +97,7 @@ directory explicitly, and always call `Close`.
 
 ## Documentation
 
-Behavior is shared with the root module unless noted otherwise:
+Reference documentation:
 
 - [Documentation index](../docs/README.md)
 - [Concepts](../docs/concepts.md): what the adapter does, why it exists, and how

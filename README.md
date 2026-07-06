@@ -25,8 +25,6 @@ go get github.com/normahq/go-adk-acpagent
 This module targets Go 1.26.4 and uses the Go version declared in `go.mod`
 for CI.
 
-Use `github.com/normahq/go-adk-acpagent/v2` with `google.golang.org/adk/v2`.
-
 ## Usage
 
 ```go
@@ -76,19 +74,11 @@ from `session/new` or `session/resume`; set `Config.ModelConfigID` when a
 provider uses a known custom config option id. The lower-level client API is
 `Client.SetSessionConfigOption`.
 
-For ADK v2, import the major-version module and keep the rest of the adapter
-contract the same:
-
-```go
-import acpagent "github.com/normahq/go-adk-acpagent/v2"
-```
-
 ## Examples
 
 Runnable examples are included under:
 
-- [`examples/codex`](examples/codex) for `google.golang.org/adk`
-- [`v2/examples/codex`](v2/examples/codex) for `google.golang.org/adk/v2`
+- [`examples/codex`](examples/codex)
 
 The examples show the production defaults expected by this adapter: pass a
 request-scoped context to construction, configure a structured `slog.Logger`,
@@ -113,12 +103,6 @@ ACP provider error metadata helpers are available from:
 
 ```go
 import "github.com/normahq/go-adk-acpagent/acperror"
-```
-
-For ADK v2, use:
-
-```go
-import "github.com/normahq/go-adk-acpagent/v2/acperror"
 ```
 
 ACP provider failures are projected onto ADK event `ErrorCode` and
