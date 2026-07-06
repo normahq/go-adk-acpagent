@@ -8,25 +8,41 @@
 [![License](https://img.shields.io/github/license/normahq/go-adk-acpagent)](LICENSE)
 [![Version](https://img.shields.io/github/v/tag/normahq/go-adk-acpagent?label=version)](https://github.com/normahq/go-adk-acpagent/tags)
 
-`go-adk-acpagent` lets Google ADK applications run an Agent Client Protocol
-(ACP) coding agent as an ADK `agent.Agent`.
+**Run ACP-compatible coding agents as Google ADK `agent.Agent`
+implementations.**
 
-The package starts an ACP-compatible subprocess, communicates with it over
-stdio, maps ADK sessions to ACP sessions, and converts ACP updates into ADK
-events.
+`go-adk-acpagent` starts a coding-agent subprocess, talks to it with Agent
+Client Protocol (ACP) over stdio, binds ACP sessions to ADK sessions, and emits
+ADK events for streamed text, thoughts, tool calls, usage, plan updates, and
+provider errors.
 
-## Install
+Use it when your application is built on Google ADK but the coding agent you
+want to run is exposed as an ACP command.
+
+## What You Get
+
+| Capability | Behavior |
+| --- | --- |
+| ADK agent | Implements the ADK `agent.Agent` interface. |
+| ACP lifecycle | Starts one ACP subprocess per agent instance and closes it on shutdown. |
+| Session binding | Creates, stores, reuses, and resumes ACP sessions through ADK session state. |
+| Event mapping | Converts ACP updates into ADK events and state deltas. |
+| Permissions | Routes ACP permission requests through `PermissionHandler`. |
+| Session config | Applies ACP session-bound values such as model, mode, or thought level. |
+| MCP forwarding | Sends configured MCP servers to ACP session creation and resume calls. |
+| Diagnostics | Uses `*slog.Logger` for adapter logs and a separate writer for provider stderr. |
+
+## Try It With OpenCode
 
 ```sh
 go get github.com/normahq/go-adk-acpagent
 ```
 
-## Usage
-
 ```go
 package main
 
 import (
+	"context"
 	"io"
 	"log"
 	"log/slog"
@@ -41,6 +57,7 @@ func main() {
 	}))
 
 	agentRuntime, err := acpagent.New(acpagent.Config{
+		Context:    context.Background(),
 		Command:    []string{"opencode", "acp"},
 		WorkingDir: "/workspace",
 		Logger:     logger,
@@ -55,25 +72,36 @@ func main() {
 		}
 	}()
 
-	_ = agentRuntime
+	// Pass agentRuntime to an ADK runner.
 }
 ```
 
-`Config.Logger` accepts a standard `*slog.Logger` for adapter diagnostics.
-`Config.Stderr` controls ACP subprocess stderr forwarding. `Config.SessionConfig`
-applies ACP session config values through `session/set_config_option`.
+## Provider Commands
 
-## Examples
+| Provider | Command |
+| --- | --- |
+| OpenCode | `[]string{"opencode", "acp"}` |
+| Codex | `[]string{"npx", "-y", "@normahq/codex-acp-bridge@latest"}` |
+| Claude Code | `[]string{"npx", "-y", "@zed-industries/claude-code-acp@latest"}` |
+| Generic ACP | Any executable that speaks ACP on stdin/stdout. |
 
-- [`examples/opencode`](examples/opencode)
-- [`examples/codex`](examples/codex)
+Runnable examples are available for [OpenCode](examples/opencode) and
+[Codex](examples/codex).
 
-## Documentation
+## Configuration Cheatsheet
 
-- [Concepts](docs/concepts.md)
-- [Provider recipes](docs/provider-recipes.md)
-- [Session state](docs/session-state.md)
-- [Troubleshooting](docs/troubleshooting.md)
+| Field | Purpose |
+| --- | --- |
+| `Command` | ACP subprocess argv. |
+| `WorkingDir` | Process directory and default ACP session cwd. |
+| `Logger` | Adapter diagnostics through `*slog.Logger`. |
+| `Stderr` | ACP subprocess stderr forwarding. |
+| `PermissionHandler` | Application decision point for ACP permission requests. |
+| `SessionConfig` | ACP session config values applied through `session/set_config_option`. |
+| `MCPServers` | MCP servers forwarded to ACP sessions. |
+| `Instruction` / `GlobalInstruction` | ADK-style instructions prepended to prompts. |
+| `ReasoningEffort` | Provider reasoning effort metadata when supported. |
+| `OutputKey` | ADK state key for the final visible model output. |
 
 ACP provider error metadata helpers are available from:
 
@@ -81,18 +109,23 @@ ACP provider error metadata helpers are available from:
 import "github.com/normahq/go-adk-acpagent/acperror"
 ```
 
-ACP provider failures are projected onto ADK event `ErrorCode` and
-`ErrorMessage` fields when available. ACP-specific details are also available
-under `event.CustomMetadata[acperror.ProviderErrorMetadataKey]`.
+## Documentation By Task
+
+| Task | Start here |
+| --- | --- |
+| Understand lifecycle and event mapping | [Concepts](docs/concepts.md) |
+| Choose a provider command | [Provider recipes](docs/provider-recipes.md) |
+| Manage cwd, session metadata, config values, plans, and output state | [Session state](docs/session-state.md) |
+| Debug startup, JSON-RPC streams, permissions, and provider errors | [Troubleshooting](docs/troubleshooting.md) |
 
 ## Production Notes
 
 - Call `Close` during shutdown so the ACP subprocess exits cleanly.
-- Use `Config.Stderr` deliberately. `io.Discard` keeps application logs clean;
-  `os.Stderr` or another writer is useful when diagnosing provider startup.
-- Keep `Config.WorkingDir` or `CWDStateKey` pointed at an existing directory.
-- Treat `SessionStateKey` as adapter-owned except for documented `_meta` and
-  `config_values` overrides.
+- Keep ACP protocol messages on stdout and provider logs on stderr.
+- Use `SessionConfig` for session-bound model, mode, thought-level, or
+  provider-specific choices.
+- Treat `SessionStateKey` as adapter-owned except for documented `_meta`,
+  `config_values`, and cwd overrides.
 
 ## Tests
 

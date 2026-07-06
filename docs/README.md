@@ -3,13 +3,11 @@
 Start with the repository README for install and quick usage. Use these pages
 when wiring the adapter into an ADK application.
 
-## Guides
+## Documentation By Task
 
-- [Concepts](concepts.md): what the adapter does and how ACP sessions map to
-  ADK sessions.
-- [Provider recipes](provider-recipes.md): OpenCode, Codex, Claude, PI, and
-  generic ACP command examples.
-- [Session state](session-state.md): cwd overrides, ACP session identity,
-  metadata, config values, plan snapshots, and output state.
-- [Troubleshooting](troubleshooting.md): process startup, stderr, session
-  config, permissions, provider errors, and ACP inspection.
+| Task | Start here |
+| --- | --- |
+| Understand lifecycle and event mapping | [Concepts](concepts.md) |
+| Choose a provider command | [Provider recipes](provider-recipes.md) |
+| Manage cwd, session metadata, config values, plans, and output state | [Session state](session-state.md) |
+| Debug startup, JSON-RPC streams, permissions, and provider errors | [Troubleshooting](troubleshooting.md) |
