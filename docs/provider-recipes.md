@@ -24,8 +24,6 @@ OpenCode ACP agent.
 
 ## Codex
 
-Norma's Codex ACP integration uses the standalone Codex ACP bridge package.
-
 ```go
 agentRuntime, err := acpagent.New(acpagent.Config{
 	Command:    []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
@@ -35,8 +33,9 @@ agentRuntime, err := acpagent.New(acpagent.Config{
 })
 ```
 
-Use `ReasoningEffort` for Codex ACP agents that support Codex reasoning metadata.
-The adapter sends reasoning effort through `session/new._meta.codex.config`.
+Use `ReasoningEffort` for Codex ACP agents that support Codex reasoning
+metadata. The adapter sends reasoning effort through
+`session/new._meta.codex.config`.
 
 ## Claude Code
 
@@ -53,10 +52,6 @@ Claude Code ACP is started through the Zed ACP wrapper. Keep the npm package
 version pinned in production if reproducibility matters.
 
 ## PI
-
-No concrete PI ACP command is defined in the old Norma runtime configuration.
-Treat PI as a generic ACP-compatible coding agent until the command is
-standardized:
 
 ```go
 agentRuntime, err := acpagent.New(acpagent.Config{

@@ -8,22 +8,18 @@
 [![License](https://img.shields.io/github/license/normahq/go-adk-acpagent)](../LICENSE)
 [![Version](https://img.shields.io/github/v/tag/normahq/go-adk-acpagent?label=version)](https://github.com/normahq/go-adk-acpagent/tags)
 
-`go-adk-acpagent` provides a Google ADK agent implementation backed by an
-Agent Client Protocol (ACP) coding agent.
+`go-adk-acpagent/v2` lets Google ADK applications run an Agent Client Protocol
+(ACP) coding agent as an ADK `agent.Agent`.
 
-It starts an ACP-compatible coding-agent subprocess, talks to it as an ACP
-client over stdio, maps ADK sessions to ACP sessions, and maps ACP updates back
-to ADK events. ADK applications can use ACP coding agents without taking a
-dependency on Norma's PDCA, swarm, Beads, or profile layers.
+The package starts an ACP-compatible subprocess, communicates with it over
+stdio, maps ADK sessions to ACP sessions, and converts ACP updates into ADK
+events.
 
 ## Install
 
 ```sh
 go get github.com/normahq/go-adk-acpagent/v2
 ```
-
-This module targets Go 1.26.4 and uses the Go version declared in `go.mod`
-for CI.
 
 ## Usage
 
@@ -63,14 +59,9 @@ func main() {
 }
 ```
 
-`Config.Logger` accepts a standard `*slog.Logger` and is used only for adapter
-diagnostics. `Config.Stderr` is optional ACP subprocess stderr forwarding; set
-it to a file, buffer, `os.Stderr`, or `io.Discard` depending on how much raw
-provider stderr you want to keep.
-
-`Config.SessionConfig` optionally applies ACP session config values through
-`session/set_config_option`. The lower-level client API is
-`Client.SetSessionConfigOption`.
+`Config.Logger` accepts a standard `*slog.Logger` for adapter diagnostics.
+`Config.Stderr` controls ACP subprocess stderr forwarding. `Config.SessionConfig`
+applies ACP session config values through `session/set_config_option`.
 
 ACP provider error metadata helpers are available from:
 
@@ -84,35 +75,15 @@ ACP provider failures are projected onto ADK event `ErrorCode` and
 
 ## Examples
 
-Runnable examples are included under:
-
 - [`examples/opencode`](examples/opencode)
 - [`examples/codex`](examples/codex)
 
-The examples show the production defaults expected by this adapter: pass a
-request-scoped context to construction, configure a structured `slog.Logger`,
-choose whether ACP subprocess stderr is forwarded or discarded, set a working
-directory explicitly, and always call `Close`.
-
 ## Documentation
 
-Reference documentation:
-
-- [Documentation index](../docs/README.md)
-- [Concepts](../docs/concepts.md): what the adapter does, why it exists, and how
-  ACP sessions and config values map to ADK sessions.
-- [Provider recipes](../docs/provider-recipes.md): OpenCode, Codex, Claude, PI,
-  and generic ACP command examples.
-- [Session state](../docs/session-state.md): cwd overrides, ACP session
-  identity, config values, metadata, plan snapshots, and output state.
-- [Troubleshooting](../docs/troubleshooting.md): process startup, stderr,
-  session config, permissions, provider errors, and ACP inspection.
-- [Migration from Norma](../docs/migration-from-norma.md): import path and
-  config mapping from the deprecated Norma wrapper.
-
-## Session State
-
-Use `acpagent.CWDStateKey` (`"cwd"`) to override the ACP session working directory per ADK session. ACP session metadata is stored under `acpagent.SessionStateKey`, including the ACP `session_id`, optional `_meta`, and optional `config_values`. ACP plan snapshots are stored under `acpagent.PlanStateKey`.
+- [Concepts](../docs/concepts.md)
+- [Provider recipes](../docs/provider-recipes.md)
+- [Session state](../docs/session-state.md)
+- [Troubleshooting](../docs/troubleshooting.md)
 
 ## Production Notes
 
@@ -122,7 +93,6 @@ Use `acpagent.CWDStateKey` (`"cwd"`) to override the ACP session working directo
 - Keep `Config.WorkingDir` or `CWDStateKey` pointed at an existing directory.
 - Treat `SessionStateKey` as adapter-owned except for documented `_meta` and
   `config_values` overrides.
-- `Config.SessionConfig` is applied through ACP `session/set_config_option`.
 
 ## Tests
 
@@ -132,20 +102,4 @@ go test ./... -coverprofile=coverage.out
 go tool cover -func=coverage.out
 ```
 
-CI requires at least 95% total statement coverage for both modules. Security
-checks run in CI through `govulncheck`. To match CI locally from the repository
-root, install the pinned tool versions from `tools/go.mod` and run:
-
-```sh
-GOBIN="$PWD/.bin" go -C tools install github.com/golangci/golangci-lint/v2/cmd/golangci-lint
-GOBIN="$PWD/.bin" go -C tools install golang.org/x/vuln/cmd/govulncheck
-(cd v2 && ../.bin/golangci-lint run ./...)
-(cd v2 && ../.bin/govulncheck ./...)
-```
-
-Optional integration tests require the matching ACP agent binaries and build tags:
-
-```sh
-go test -tags 'integration codex' ./...
-go test -tags 'integration opencode' ./...
-```
+CI requires at least 95% total statement coverage for both modules.

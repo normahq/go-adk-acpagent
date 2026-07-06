@@ -70,12 +70,7 @@ invalid request, and unknown.
 
 ## Inspecting ACP Agents
 
-Norma includes useful standalone tools for ACP agent inspection:
-
-```sh
-acp-dump -- opencode acp
-acp-repl --model opencode/big-pickle --mode coding -- opencode acp
-```
-
-These are not part of `go-adk-acpagent`, but they are useful when verifying a
-provider command before wiring it into ADK.
+Before wiring a provider command into ADK, verify that it speaks ACP over
+stdin/stdout and writes logs to stderr. Provider-specific ACP inspection tools
+can help confirm initialization, session creation, config options, and prompt
+updates.
