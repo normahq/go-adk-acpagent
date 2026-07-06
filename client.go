@@ -323,9 +323,9 @@ func cloneAnyMap(src map[string]any) map[string]any {
 }
 
 // CreateSession creates a new ACP session and applies configured session
-// model/mode when requested.
-func (c *Client) CreateSession(ctx context.Context, cwd, model, mode string, mcpServers []acp.McpServer) (acp.NewSessionResponse, error) {
-	return c.CreateSessionWithMeta(ctx, cwd, model, mode, mcpServers, nil)
+// config values when requested.
+func (c *Client) CreateSession(ctx context.Context, cwd string, configValues []SessionConfigValue, mcpServers []acp.McpServer) (acp.NewSessionResponse, error) {
+	return c.CreateSessionWithMeta(ctx, cwd, configValues, mcpServers, nil)
 }
 
 // ResumeSession resumes an existing ACP session in the provided working
@@ -449,19 +449,17 @@ func (c *Client) logSessionRestoreSuccess(ctx context.Context, method, sessionID
 }
 
 // CreateSessionWithMeta creates a new ACP session with optional session/new
-// _meta and applies configured session model/mode when requested.
+// _meta and applies configured session config values when requested.
 //
 // This helper is equivalent to:
 //  1. NewSessionWithMeta(ctx, cwd, mcpServers, meta)
-//  2. optionally SetSessionConfigOption(...) for the ACP model option
-//  3. optionally SetSessionMode(...)
+//  2. optionally SetSessionConfigOption(...) for ACP session config values
 //
 // The ACP protocol requires cwd to be an absolute path.
 func (c *Client) CreateSessionWithMeta(
 	ctx context.Context,
-	cwd,
-	model,
-	mode string,
+	cwd string,
+	configValues []SessionConfigValue,
 	mcpServers []acp.McpServer,
 	meta map[string]any,
 ) (acp.NewSessionResponse, error) {
@@ -469,81 +467,93 @@ func (c *Client) CreateSessionWithMeta(
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
-	if _, err := c.applySessionModelAndMode(ctx, string(resp.SessionId), model, "", mode, resp.ConfigOptions, resp.Modes); err != nil {
+	if _, err := c.applySessionConfig(ctx, string(resp.SessionId), configValues, resp.ConfigOptions, resp.Modes); err != nil {
 		return acp.NewSessionResponse{}, err
 	}
 	return resp, nil
 }
 
-func (c *Client) applySessionModelAndMode(
+func (c *Client) applySessionConfig(
 	ctx context.Context,
-	sessionID,
-	model,
-	modelConfigID,
-	mode string,
+	sessionID string,
+	values []SessionConfigValue,
 	configOptions []acp.SessionConfigOption,
 	modes *acp.SessionModeState,
-) (string, error) {
+) ([]SessionConfigValue, error) {
 	l := c.loggerForContext(ctx)
-	appliedModelConfigID := ""
-	trimmedModel := strings.TrimSpace(model)
-	if trimmedModel != "" {
-		resolvedModelConfigID, err := resolveModelConfigID(modelConfigID, configOptions)
-		if err != nil {
-			return "", err
-		}
-		_, err = c.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
-			ValueId: &acp.SetSessionConfigOptionValueId{
-				SessionId: acp.SessionId(sessionID),
-				ConfigId:  acp.SessionConfigId(resolvedModelConfigID),
-				Value:     acp.SessionConfigValueId(trimmedModel),
-			},
-		})
-		if err != nil {
-			return "", fmt.Errorf("set acp session model config option %q: %w", resolvedModelConfigID, err)
-		}
-		appliedModelConfigID = resolvedModelConfigID
-	}
-
-	trimmedMode := strings.TrimSpace(mode)
-	if trimmedMode != "" {
-		if err := c.SetSessionMode(ctx, sessionID, trimmedMode); err != nil {
-			if isACPMethodNotFoundError(err) {
-				l.Debug().
-					Str("acp_session_id", sessionID).
-					Str("mode", trimmedMode).
-					Msg("acp session/set_mode unsupported; continuing")
-			} else {
-				return "", fmt.Errorf("set acp session mode: %w", err)
+	currentOptions := configOptions
+	for _, value := range normalizeSessionConfigValues(values) {
+		optionID := strings.TrimSpace(value.ID)
+		optionValue := strings.TrimSpace(value.Value)
+		if hasSessionConfigOption(currentOptions, optionID) {
+			resp, err := c.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
+				ValueId: &acp.SetSessionConfigOptionValueId{
+					SessionId: acp.SessionId(sessionID),
+					ConfigId:  acp.SessionConfigId(optionID),
+					Value:     acp.SessionConfigValueId(optionValue),
+				},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("set acp session config option %q: %w", optionID, err)
 			}
-		} else if modes != nil {
-			modes.CurrentModeId = acp.SessionModeId(trimmedMode)
-		}
-	}
-	return appliedModelConfigID, nil
-}
-
-func resolveModelConfigID(configID string, options []acp.SessionConfigOption) (string, error) {
-	if trimmed := strings.TrimSpace(configID); trimmed != "" {
-		return trimmed, nil
-	}
-	for _, option := range options {
-		if option.Select == nil || option.Select.Category == nil {
+			currentOptions = resp.ConfigOptions
 			continue
 		}
-		if *option.Select.Category == acp.SessionConfigOptionCategoryModel && strings.TrimSpace(string(option.Select.Id)) != "" {
-			return strings.TrimSpace(string(option.Select.Id)), nil
+		if optionID == "mode" && modes != nil {
+			if err := c.SetSessionMode(ctx, sessionID, optionValue); err != nil {
+				if isACPMethodNotFoundError(err) {
+					l.Debug().
+						Str("acp_session_id", sessionID).
+						Str("mode", optionValue).
+						Msg("acp session/set_mode unsupported; continuing")
+					continue
+				}
+				return nil, fmt.Errorf("set acp session mode: %w", err)
+			}
+			modes.CurrentModeId = acp.SessionModeId(optionValue)
+			continue
 		}
+		return nil, fmt.Errorf("acp session config option %q is not available", optionID)
 	}
+	return collectSessionConfigValues(currentOptions, modes), nil
+}
+
+func hasSessionConfigOption(options []acp.SessionConfigOption, id string) bool {
 	for _, option := range options {
 		if option.Select == nil {
 			continue
 		}
-		if strings.TrimSpace(string(option.Select.Id)) == "model" {
-			return "model", nil
+		if strings.TrimSpace(string(option.Select.Id)) == strings.TrimSpace(id) {
+			return true
 		}
 	}
-	return "", errors.New("acp model config option is not available")
+	return false
+}
+
+func collectSessionConfigValues(options []acp.SessionConfigOption, modes *acp.SessionModeState) []SessionConfigValue {
+	values := make([]SessionConfigValue, 0, len(options)+1)
+	seen := make(map[string]struct{}, len(options)+1)
+	for _, option := range options {
+		if option.Select == nil {
+			continue
+		}
+		id := strings.TrimSpace(string(option.Select.Id))
+		value := strings.TrimSpace(string(option.Select.CurrentValue))
+		if id == "" || value == "" {
+			continue
+		}
+		values = append(values, SessionConfigValue{ID: id, Value: value})
+		seen[id] = struct{}{}
+	}
+	if modes != nil {
+		mode := strings.TrimSpace(string(modes.CurrentModeId))
+		if mode != "" {
+			if _, ok := seen["mode"]; !ok {
+				values = append(values, SessionConfigValue{ID: "mode", Value: mode})
+			}
+		}
+	}
+	return values
 }
 
 // SetSessionConfigOption sets an ACP session configuration option.

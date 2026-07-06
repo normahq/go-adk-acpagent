@@ -31,9 +31,8 @@
 //   - The adapter persists the canonical ACP session ID under
 //     `state[SessionStateKey].session_id` and uses that value for
 //     ACP session/resume when the ACP agent advertises resume capability.
-//     When [Config.Model] is set, the adapter also persists the discovered
-//     ACP model configuration option ID under
-//     `state[SessionStateKey].model_config_id`.
+//     ACP session configuration values are persisted under
+//     `state[SessionStateKey].config_values`.
 //   - As soon as the adapter binds a remote ACP session, it stores the
 //     canonical ACP session ID in the live ADK session state under
 //     `state[SessionStateKey]`.
@@ -50,17 +49,15 @@
 //     history.
 //   - If `state[SessionStateKey].meta` is set, it is passed through to ACP
 //     session/new._meta and session/resume._meta.
-//   - If `state[SessionStateKey].model_config_id` is set, it is used to apply
-//     [Config.Model] through ACP session/set_config_option for an existing ACP
-//     session. Otherwise, [Config.ModelConfigID] or a model config option
-//     discovered from the ACP session response is used.
+//   - If `state[SessionStateKey].config_values` is set, it overrides matching
+//     [Config.SessionConfig] defaults for that ADK session.
 //   - Overrides are read when the ACP session is first created for the ADK
 //     session. Subsequent changes do not rebind that existing ACP session.
 //
 // Invalid override values (for example, non-string `state[CWDStateKey]`,
 // non-object `state[SessionStateKey]`, non-object `state[SessionStateKey].meta`,
 // non-string `state[SessionStateKey].session_id`,
-// non-string `state[SessionStateKey].model_config_id`,
+// invalid `state[SessionStateKey].config_values`,
 // or a cwd that is not a valid existing directory) cause invocation failure
 // before ACP session creation.
 //

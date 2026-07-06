@@ -58,8 +58,8 @@ Norma `ACPConfig` fields map to `acpagent.Config` as follows:
 | Norma field | Standalone field |
 | --- | --- |
 | `cmd` / resolved alias command | `Config.Command` |
-| `model` | `Config.Model` |
-| `mode` | `Config.Mode` |
+| `model` | `Config.SessionConfig` entry with `ID: "model"` |
+| `mode` | `Config.SessionConfig` entry with `ID: "mode"` |
 | `reasoning_effort` | `Config.ReasoningEffort` |
 | `system_instructions` | `Config.Instruction` or `Config.GlobalInstruction` |
 | MCP server registry entries | `Config.MCPServers` |
@@ -69,7 +69,7 @@ Norma `ACPConfig` fields map to `acpagent.Config` as follows:
 
 ## Behavior Changes To Notice
 
-- Model selection uses ACP `session/set_config_option`.
+- Session configuration uses ACP `session/set_config_option`.
 - `session/set_model` is not used.
 - ACP session identity is stored in ADK session state under `SessionStateKey`.
 - ACP `session/load` is not used.

@@ -29,6 +29,15 @@ import (
 // invocation context, mirroring llmagent semantics.
 type InstructionProvider func(ctx adkagent.ReadonlyContext) (string, error)
 
+// SessionConfigValue is an ACP session configuration value to apply to each
+// bound ACP session.
+type SessionConfigValue struct {
+	// ID is the ACP session config option ID.
+	ID string `json:"id"`
+	// Value is the ACP session config value ID.
+	Value string `json:"value"`
+}
+
 // Config configures an ACP-backed ADK agent.
 type Config struct {
 	// Context is the base context for the agent's lifecycle.
@@ -43,14 +52,9 @@ type Config struct {
 	// AfterAgentCallbacks are standard ADK lifecycle callbacks invoked after
 	// the ACP-backed run completes.
 	AfterAgentCallbacks []adkagent.AfterAgentCallback
-	// Model is the specific LLM model identifier to use.
-	Model string
-	// ModelConfigID is the ACP session config option id used to select Model.
-	// When empty, the adapter discovers a select option with category "model"
-	// from the ACP session response.
-	ModelConfigID string
-	// Mode is the ACP session mode identifier to use.
-	Mode string
+	// SessionConfig contains ACP session configuration values applied after
+	// session/new or session/resume.
+	SessionConfig []SessionConfigValue
 	// Instruction is the optional instruction applied to each invocation.
 	Instruction string
 	// GlobalInstruction is the optional global instruction applied before
@@ -107,9 +111,7 @@ type Agent struct {
 
 	client                    *Client
 	workingDir                string
-	sessionModel              string
-	sessionModelConfigID      string
-	sessionMode               string
+	sessionConfig             []SessionConfigValue
 	reasoningEffort           string
 	outputKey                 string
 	instruction               string
@@ -121,16 +123,16 @@ type Agent struct {
 }
 
 type acpSessionConfig struct {
-	sessionID     string
-	modelConfigID string
-	cwd           string
-	meta          map[string]any
-	metaJSON      string
+	sessionID    string
+	configValues []SessionConfigValue
+	cwd          string
+	meta         map[string]any
+	metaJSON     string
 }
 
 type remoteSession struct {
 	id                      string
-	modelConfigID           string
+	configValues            []SessionConfigValue
 	metaJSON                string
 	fresh                   bool
 	firstPromptInstructions string
@@ -278,9 +280,7 @@ func New(cfg Config) (*Agent, error) {
 	a := &Agent{
 		client:                    client,
 		workingDir:                cfg.WorkingDir,
-		sessionModel:              strings.TrimSpace(cfg.Model),
-		sessionModelConfigID:      strings.TrimSpace(cfg.ModelConfigID),
-		sessionMode:               strings.TrimSpace(cfg.Mode),
+		sessionConfig:             normalizeSessionConfigValues(cfg.SessionConfig),
 		reasoningEffort:           strings.TrimSpace(cfg.ReasoningEffort),
 		outputKey:                 strings.TrimSpace(cfg.OutputKey),
 		instruction:               normalizeInstruction(cfg.Instruction, cfg.SystemInstructions),
@@ -343,7 +343,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 		}
 		stateEvent := session.NewEvent(ctx.InvocationID())
-		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.modelConfigID)
+		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
 		if len(stateEvent.Actions.StateDelta) > 0 {
 			a.logADKEvent(logger, stateEvent, "yielding acp session state event")
 			if !yield(stateEvent, nil) {
@@ -364,7 +364,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 				promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 			}
 			stateEvent := session.NewEvent(ctx.InvocationID())
-			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.modelConfigID)
+			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
 			if len(stateEvent.Actions.StateDelta) > 0 {
 				a.logADKEvent(logger, stateEvent, "yielding recovered acp session state event")
 				if !yield(stateEvent, nil) {
@@ -398,7 +398,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		if result.latestPlanSnapshot != nil {
 			ev.Actions.StateDelta[PlanStateKey] = result.latestPlanSnapshot
 		}
-		a.persistSessionStateDelta(ev, remote.id, remote.metaJSON, remote.modelConfigID)
+		a.persistSessionStateDelta(ev, remote.id, remote.metaJSON, remote.configValues)
 		a.maybeSaveOutputToState(ev, result.finalOutput)
 		ev.TurnComplete = true
 		a.logADKEvent(logger, ev, "yielding final turn complete event")
@@ -579,7 +579,7 @@ func (a *Agent) maybeSaveOutputToState(event *session.Event, output string) {
 	event.Actions.StateDelta[a.outputKey] = output
 }
 
-func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID, metaJSON, modelConfigID string) {
+func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID, metaJSON string, configValues []SessionConfigValue) {
 	if event == nil || event.Partial || strings.TrimSpace(remoteSessionID) == "" {
 		return
 	}
@@ -587,7 +587,7 @@ func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID, 
 	if event.Actions.StateDelta == nil {
 		event.Actions.StateDelta = make(map[string]any)
 	}
-	event.Actions.StateDelta[SessionStateKey] = buildACPStateWithModelConfigID(remoteSessionID, metaJSON, modelConfigID)
+	event.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues(remoteSessionID, metaJSON, configValues)
 }
 
 func (a *Agent) invocationLogger(ctx context.Context) logger {
@@ -688,25 +688,23 @@ func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 		logger.Debug().
 			Str("acp_session_id", cfg.sessionID).
 			Msg("using acp session id from adk session state")
-		appliedModelConfigID, err := a.client.applySessionModelAndMode(
+		configValues, err := a.client.applySessionConfig(
 			logCtx,
 			cfg.sessionID,
-			a.sessionModel,
-			cfg.modelConfigID,
-			a.sessionMode,
+			cfg.configValues,
 			nil,
 			nil,
 		)
 		if err != nil {
 			return remoteSession{}, err
 		}
-		if appliedModelConfigID != "" {
-			cfg.modelConfigID = appliedModelConfigID
+		if len(configValues) > 0 {
+			cfg.configValues = configValues
 		}
-		if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.modelConfigID); err != nil {
+		if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues); err != nil {
 			return remoteSession{}, err
 		}
-		return remoteSession{id: cfg.sessionID, modelConfigID: cfg.modelConfigID, metaJSON: cfg.metaJSON}, nil
+		return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}, nil
 	}
 	instructions, err := a.resolveInstructionParts(ctx)
 	if err != nil {
@@ -732,36 +730,34 @@ func (a *Agent) recoverRemoteSession(
 	if cfg.sessionID != "" && a.client.SupportsSessionResume() {
 		resumeResp, err := a.client.ResumeSessionWithMeta(logCtx, cfg.sessionID, cfg.cwd, a.mcpServers, cfg.meta)
 		if err == nil {
-			appliedModelConfigID, err := a.client.applySessionModelAndMode(
+			configValues, err := a.client.applySessionConfig(
 				logCtx,
 				cfg.sessionID,
-				a.sessionModel,
-				cfg.modelConfigID,
-				a.sessionMode,
+				cfg.configValues,
 				resumeResp.ConfigOptions,
 				resumeResp.Modes,
 			)
 			if err != nil {
 				return remoteSession{}, err
 			}
-			if appliedModelConfigID != "" {
-				cfg.modelConfigID = appliedModelConfigID
+			if len(configValues) > 0 {
+				cfg.configValues = configValues
 			}
 			a.logBoundRemoteSession(logger, "resumed acp session after prompt failure", cfg.sessionID, cfg.cwd, cfg.metaJSON)
-			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.modelConfigID); err != nil {
+			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues); err != nil {
 				return remoteSession{}, err
 			}
-			return remoteSession{id: cfg.sessionID, modelConfigID: cfg.modelConfigID, metaJSON: cfg.metaJSON}, nil
+			return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}, nil
 		}
 		if isACPSessionAlreadyExistsError(err) {
 			logger.Debug().
 				Err(err).
 				Str("acp_session_id", cfg.sessionID).
 				Msg("acp session already active after prompt failure")
-			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.modelConfigID); err != nil {
+			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues); err != nil {
 				return remoteSession{}, err
 			}
-			return remoteSession{id: cfg.sessionID, modelConfigID: cfg.modelConfigID, metaJSON: cfg.metaJSON}, nil
+			return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}, nil
 		}
 		if !isACPSessionNotFoundError(err) {
 			return remoteSession{}, fmt.Errorf("resume acp session %q after prompt failure: %w", cfg.sessionID, err)
@@ -798,28 +794,26 @@ func (a *Agent) createRemoteSession(
 		return remoteSession{}, err
 	}
 	sessionID := string(resp.SessionId)
-	appliedModelConfigID, err := a.client.applySessionModelAndMode(
+	configValues, err := a.client.applySessionConfig(
 		logCtx,
 		sessionID,
-		a.sessionModel,
-		cfg.modelConfigID,
-		a.sessionMode,
+		cfg.configValues,
 		resp.ConfigOptions,
 		resp.Modes,
 	)
 	if err != nil {
 		return remoteSession{}, err
 	}
-	if appliedModelConfigID != "" {
-		cfg.modelConfigID = appliedModelConfigID
+	if len(configValues) > 0 {
+		cfg.configValues = configValues
 	}
 	a.logBoundRemoteSession(logger, "created new acp session for adk session", sessionID, cfg.cwd, cfg.metaJSON)
-	if err := a.persistRemoteSessionBinding(ctx, sessionID, cfg.metaJSON, cfg.modelConfigID); err != nil {
+	if err := a.persistRemoteSessionBinding(ctx, sessionID, cfg.metaJSON, cfg.configValues); err != nil {
 		return remoteSession{}, err
 	}
 	return remoteSession{
 		id:                      sessionID,
-		modelConfigID:           cfg.modelConfigID,
+		configValues:            cfg.configValues,
 		metaJSON:                cfg.metaJSON,
 		fresh:                   true,
 		firstPromptInstructions: strings.TrimSpace(firstPromptInstructions),
@@ -837,25 +831,22 @@ func (a *Agent) logBoundRemoteSession(
 		Str("acp_session_id", remoteSessionID).
 		Str("cwd", cwd).
 		RawJSON("meta", []byte(metaJSON))
-	if a.sessionModel != "" {
-		event = event.Str("model", a.sessionModel)
-	}
-	if a.sessionMode != "" {
-		event = event.Str("mode", a.sessionMode)
+	if len(a.sessionConfig) > 0 {
+		event = event.Int("session_config_values", len(a.sessionConfig))
 	}
 	event.Msg(message)
 }
 
 func buildACPState(remoteSessionID, metaJSON string) map[string]any {
-	return buildACPStateWithModelConfigID(remoteSessionID, metaJSON, "")
+	return buildACPStateWithConfigValues(remoteSessionID, metaJSON, nil)
 }
 
-func buildACPStateWithModelConfigID(remoteSessionID, metaJSON, modelConfigID string) map[string]any {
+func buildACPStateWithConfigValues(remoteSessionID, metaJSON string, configValues []SessionConfigValue) map[string]any {
 	acpState := map[string]any{
 		"session_id": remoteSessionID,
 	}
-	if strings.TrimSpace(modelConfigID) != "" {
-		acpState["model_config_id"] = strings.TrimSpace(modelConfigID)
+	if normalized := normalizeSessionConfigValues(configValues); len(normalized) > 0 {
+		acpState["config_values"] = sessionConfigValuesToState(normalized)
 	}
 	if strings.TrimSpace(metaJSON) == "" || metaJSON == "{}" {
 		return acpState
@@ -867,17 +858,114 @@ func buildACPStateWithModelConfigID(remoteSessionID, metaJSON, modelConfigID str
 	return acpState
 }
 
+func normalizeSessionConfigValues(values []SessionConfigValue) []SessionConfigValue {
+	normalized := make([]SessionConfigValue, 0, len(values))
+	for _, value := range values {
+		id := strings.TrimSpace(value.ID)
+		configValue := strings.TrimSpace(value.Value)
+		if id == "" || configValue == "" {
+			continue
+		}
+		normalized = append(normalized, SessionConfigValue{ID: id, Value: configValue})
+	}
+	return normalized
+}
+
+func cloneSessionConfigValues(values []SessionConfigValue) []SessionConfigValue {
+	return append([]SessionConfigValue(nil), normalizeSessionConfigValues(values)...)
+}
+
+func mergeSessionConfigValues(defaults, overrides []SessionConfigValue) []SessionConfigValue {
+	merged := cloneSessionConfigValues(defaults)
+	indexByID := make(map[string]int, len(merged))
+	for i, value := range merged {
+		indexByID[value.ID] = i
+	}
+	for _, value := range normalizeSessionConfigValues(overrides) {
+		if index, ok := indexByID[value.ID]; ok {
+			merged[index] = value
+			continue
+		}
+		indexByID[value.ID] = len(merged)
+		merged = append(merged, value)
+	}
+	return merged
+}
+
+func sessionConfigValuesToState(values []SessionConfigValue) []map[string]string {
+	normalized := normalizeSessionConfigValues(values)
+	stateValues := make([]map[string]string, 0, len(normalized))
+	for _, value := range normalized {
+		stateValues = append(stateValues, map[string]string{
+			"id":    value.ID,
+			"value": value.Value,
+		})
+	}
+	return stateValues
+}
+
+func parseSessionConfigValues(raw any) ([]SessionConfigValue, error) {
+	switch values := raw.(type) {
+	case []SessionConfigValue:
+		return normalizeSessionConfigValues(values), nil
+	case []map[string]string:
+		parsed := make([]SessionConfigValue, 0, len(values))
+		for _, value := range values {
+			parsed = append(parsed, SessionConfigValue{ID: value["id"], Value: value["value"]})
+		}
+		return normalizeSessionConfigValues(parsed), nil
+	case []map[string]any:
+		return parseAnySessionConfigValueMaps(values)
+	case []any:
+		parsed := make([]map[string]any, 0, len(values))
+		for _, rawValue := range values {
+			value, ok := rawValue.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("must be an array of objects; got element %T", rawValue)
+			}
+			parsed = append(parsed, value)
+		}
+		return parseAnySessionConfigValueMaps(parsed)
+	default:
+		return nil, fmt.Errorf("must be an array; got %T", raw)
+	}
+}
+
+func parseAnySessionConfigValueMaps(values []map[string]any) ([]SessionConfigValue, error) {
+	parsed := make([]SessionConfigValue, 0, len(values))
+	for _, value := range values {
+		rawID, ok := value["id"]
+		if !ok {
+			return nil, errors.New(`entry missing "id"`)
+		}
+		id, ok := rawID.(string)
+		if !ok {
+			return nil, fmt.Errorf(`entry "id" must be a string; got %T`, rawID)
+		}
+		rawValue, ok := value["value"]
+		if !ok {
+			return nil, errors.New(`entry missing "value"`)
+		}
+		configValue, ok := rawValue.(string)
+		if !ok {
+			return nil, fmt.Errorf(`entry "value" must be a string; got %T`, rawValue)
+		}
+		parsed = append(parsed, SessionConfigValue{ID: id, Value: configValue})
+	}
+	return normalizeSessionConfigValues(parsed), nil
+}
+
 func (a *Agent) persistRemoteSessionBinding(
 	ctx adkagent.InvocationContext,
 	remoteSessionID string,
 	metaJSON string,
-	modelConfigID string,
+	configValues []SessionConfigValue,
 ) error {
 	if ctx == nil || ctx.Session() == nil || strings.TrimSpace(remoteSessionID) == "" {
 		return nil
 	}
 
-	acpState := buildACPStateWithModelConfigID(remoteSessionID, metaJSON, modelConfigID)
+	acpState := buildACPStateWithConfigValues(remoteSessionID, metaJSON, configValues)
 	if currentACPStateMatches(ctx.Session(), remoteSessionID, metaJSON) {
 		if err := ctx.Session().State().Set(SessionStateKey, cloneAnyMap(acpState)); err != nil {
 			return fmt.Errorf("set live acp session state: %w", err)
@@ -944,8 +1032,8 @@ func normalizeACPStateMetaJSONFromRaw(raw string) string {
 
 func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSessionConfig, error) {
 	cfg := acpSessionConfig{
-		cwd:           strings.TrimSpace(a.workingDir),
-		modelConfigID: strings.TrimSpace(a.sessionModelConfigID),
+		cwd:          strings.TrimSpace(a.workingDir),
+		configValues: cloneSessionConfigValues(a.sessionConfig),
 	}
 	rawCWD, err := ctx.Session().State().Get(CWDStateKey)
 	if err != nil {
@@ -990,14 +1078,12 @@ func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSession
 		}
 		cfg.sessionID = strings.TrimSpace(sessionID)
 	}
-	if rawModelConfigID, ok := state["model_config_id"]; ok {
-		modelConfigID, ok := rawModelConfigID.(string)
-		if !ok {
-			return acpSessionConfig{}, fmt.Errorf("adk session state %q.model_config_id must be a string; got %T", SessionStateKey, rawModelConfigID)
+	if rawConfigValues, ok := state["config_values"]; ok {
+		configValues, err := parseSessionConfigValues(rawConfigValues)
+		if err != nil {
+			return acpSessionConfig{}, fmt.Errorf("adk session state %q.config_values: %w", SessionStateKey, err)
 		}
-		if cfg.modelConfigID == "" {
-			cfg.modelConfigID = strings.TrimSpace(modelConfigID)
-		}
+		cfg.configValues = mergeSessionConfigValues(cfg.configValues, configValues)
 	}
 	cfg, err = addReasoningEffortToSessionConfig(cfg, a.reasoningEffort)
 	if err != nil {
@@ -1529,15 +1615,9 @@ func mapACPUpdateToEvent(logger logger, invocationID string, ext ExtendedSession
 		})
 		return nil, false
 	case update.CurrentModeUpdate != nil:
-		logIgnoredACPUpdate(logger, "current_mode_update", map[string]any{
-			"currentModeId": update.CurrentModeUpdate.CurrentModeId,
-		})
-		return nil, false
+		return mapACPCurrentModeUpdate(invocationID, string(ext.SessionId), update.CurrentModeUpdate)
 	case update.ConfigOptionUpdate != nil:
-		logIgnoredACPUpdate(logger, "config_option_update", map[string]any{
-			"configOptions": update.ConfigOptionUpdate.ConfigOptions,
-		})
-		return nil, false
+		return mapACPConfigOptionUpdate(invocationID, string(ext.SessionId), update.ConfigOptionUpdate)
 	case update.SessionInfoUpdate != nil:
 		logIgnoredACPUpdate(logger, "session_info_update", map[string]any{
 			"title":     update.SessionInfoUpdate.Title,
@@ -1704,6 +1784,34 @@ func mapACPPlanUpdate(_ logger, invocationID string, plan *acp.SessionUpdatePlan
 	ev.Actions.StateDelta[PlanStateKey] = map[string]any{
 		acpPlanEntriesKey: entries,
 	}
+	ev.Partial = true
+	return ev, true
+}
+
+func mapACPConfigOptionUpdate(invocationID, sessionID string, update *acp.SessionConfigOptionUpdate) (*session.Event, bool) {
+	if update == nil || strings.TrimSpace(sessionID) == "" {
+		return nil, false
+	}
+	values := collectSessionConfigValues(update.ConfigOptions, nil)
+	if len(values) == 0 {
+		return nil, false
+	}
+	ev := session.NewEvent(invocationID)
+	ev.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues(sessionID, "", values)
+	ev.Partial = true
+	return ev, true
+}
+
+func mapACPCurrentModeUpdate(invocationID, sessionID string, update *acp.SessionCurrentModeUpdate) (*session.Event, bool) {
+	if update == nil || strings.TrimSpace(sessionID) == "" {
+		return nil, false
+	}
+	mode := strings.TrimSpace(string(update.CurrentModeId))
+	if mode == "" {
+		return nil, false
+	}
+	ev := session.NewEvent(invocationID)
+	ev.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues(sessionID, "", []SessionConfigValue{{ID: "mode", Value: mode}})
 	ev.Partial = true
 	return ev, true
 }

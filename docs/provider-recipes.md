@@ -4,8 +4,23 @@
 command you run.
 
 Each recipe below shows the `Config.Command` shape used to start the ACP stdio
-agent. Add `Model`, `Mode`, `ReasoningEffort`, `MCPServers`, `Logger`, and
+agent. Add `SessionConfig`, `ReasoningEffort`, `MCPServers`, `Logger`, and
 `Stderr` as needed for your application.
+
+## OpenCode
+
+```go
+agentRuntime, err := acpagent.New(acpagent.Config{
+	Command:    []string{"opencode", "acp"},
+	WorkingDir: "/workspace",
+	Stderr:     os.Stderr,
+	Logger:     logger,
+})
+```
+
+OpenCode supports ACP directly through `opencode acp`. Optional model or mode
+selection should use ACP session config values exposed by your installed
+OpenCode ACP agent.
 
 ## Codex
 
@@ -13,45 +28,24 @@ Norma's Codex ACP integration uses the standalone Codex ACP bridge package.
 
 ```go
 agentRuntime, err := acpagent.New(acpagent.Config{
-	Command:       []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
-	WorkingDir:    "/workspace",
-	Model:         "gpt-5-codex",
-	ModelConfigID: "model",
-	Stderr:        os.Stderr,
-	Logger:        logger,
+	Command:    []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
+	WorkingDir: "/workspace",
+	Stderr:     os.Stderr,
+	Logger:     logger,
 })
 ```
 
 Use `ReasoningEffort` for Codex ACP agents that support Codex reasoning metadata.
 The adapter sends reasoning effort through `session/new._meta.codex.config`.
 
-## OpenCode
-
-```go
-agentRuntime, err := acpagent.New(acpagent.Config{
-	Command:       []string{"opencode", "acp"},
-	WorkingDir:    "/workspace",
-	Model:         "opencode/big-pickle",
-	ModelConfigID: "model",
-	Mode:          "coding",
-	Stderr:        os.Stderr,
-	Logger:        logger,
-})
-```
-
-OpenCode supports ACP directly through `opencode acp`. Use the model and mode
-identifiers exposed by your installed OpenCode ACP agent.
-
 ## Claude Code
 
 ```go
 agentRuntime, err := acpagent.New(acpagent.Config{
-	Command:       []string{"npx", "-y", "@zed-industries/claude-code-acp@latest"},
-	WorkingDir:    "/workspace",
-	Model:         "claude-sonnet-4-20250514",
-	ModelConfigID: "model",
-	Stderr:        os.Stderr,
-	Logger:        logger,
+	Command:    []string{"npx", "-y", "@zed-industries/claude-code-acp@latest"},
+	WorkingDir: "/workspace",
+	Stderr:     os.Stderr,
+	Logger:     logger,
 })
 ```
 
@@ -66,12 +60,10 @@ standardized:
 
 ```go
 agentRuntime, err := acpagent.New(acpagent.Config{
-	Command:       []string{"pi-acp"},
-	WorkingDir:    "/workspace",
-	Model:         "pi-model-id",
-	ModelConfigID: "model",
-	Stderr:        os.Stderr,
-	Logger:        logger,
+	Command:    []string{"pi-acp"},
+	WorkingDir: "/workspace",
+	Stderr:     os.Stderr,
+	Logger:     logger,
 })
 ```
 

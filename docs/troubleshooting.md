@@ -20,23 +20,25 @@ ACP agents must write protocol messages to stdout and logs to stderr. If a
 provider writes logs to stdout, it can corrupt the JSON-RPC stream. Use the
 provider's quiet/stdio mode or wrap it with a script that keeps logs on stderr.
 
-## Model Selection Fails
+## Session Config Selection Fails
 
-`Config.Model` uses ACP `session/set_config_option`, not the legacy
-`session/set_model` method.
+`Config.SessionConfig` uses ACP `session/set_config_option`, not legacy
+provider-specific setters.
 
-If model selection fails:
+If session config selection fails:
 
-- confirm the ACP agent returns model config options from `session/new` or
+- confirm the ACP agent returns matching config options from `session/new` or
   `session/resume`
-- set `Config.ModelConfigID` when the agent uses a nonstandard option ID
+- use the exact ACP config option ID exposed by the agent
 - inspect logs with `Config.Logger`
 - forward stderr while debugging provider startup and capability negotiation
 
-## Mode Selection Fails
+## Legacy Mode Selection Fails
 
-`Config.Mode` uses ACP `session/set_mode`. Use only mode IDs reported by the ACP
-agent. If the agent does not support modes, leave `Config.Mode` empty.
+Mode should normally be configured through `Config.SessionConfig`. For legacy
+ACP agents that expose only `session/set_mode`, use
+`SessionConfigValue{ID: "mode", Value: "<mode-id>"}` and confirm the agent
+returns legacy mode state from `session/new` or `session/resume`.
 
 ## Permission Requests Do Nothing
 

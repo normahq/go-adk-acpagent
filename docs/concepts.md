@@ -22,7 +22,7 @@ The package handles:
 - ADK event mapping for text, thoughts, tool calls, usage, plan updates, and
   provider errors.
 - ACP permission callbacks through `PermissionHandler`.
-- Optional model and mode selection through ACP session configuration.
+- Optional session configuration through ACP session config options.
 - Optional MCP server forwarding to ACP `session/new` and `session/resume`.
 
 ## Why It Exists
@@ -68,15 +68,15 @@ If the ACP agent reports resume capability, the adapter uses
 session. ACP `session/load` is intentionally not used because ACP load replays
 history and this package does not project that replay into ADK-visible history.
 
-## Model And Mode Selection
+## Session Configuration
 
-`Config.Model` is applied with ACP `session/set_config_option`. The adapter
-uses `Config.ModelConfigID` when set, otherwise it discovers a model select
-option from the ACP session response.
+`Config.SessionConfig` is applied with ACP `session/set_config_option`. ACP
+session config options are session-bound and can represent model, mode, thought
+level, or provider-specific controls.
 
-`Config.Mode` is applied with ACP `session/set_mode` when configured.
-
-If a provider does not expose the expected model config option or mode, the
+For legacy ACP agents that expose modes only through `session/set_mode`, the
+adapter uses that method as a fallback for `SessionConfigValue{ID: "mode"}`.
+If a provider does not expose the requested session config option, the
 constructor still succeeds, but session creation or prompt execution can fail
 with a wrapped ACP request error. Use `Config.Logger` and `Config.Stderr` when
 debugging provider capability mismatches.

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -258,76 +259,92 @@ func TestClientSetSessionModeValidation(t *testing.T) {
 	}
 }
 
-func TestResolveModelConfigID(t *testing.T) {
+func TestSessionConfigOptionHelpers(t *testing.T) {
 	t.Parallel()
 
 	modelCategory := acp.SessionConfigOptionCategoryModel
-	tests := []struct {
-		name     string
-		configID string
-		options  []acp.SessionConfigOption
-		want     string
-		wantErr  bool
-	}{
-		{name: "explicit", configID: "provider.model", want: "provider.model"},
+	modeCategory := acp.SessionConfigOptionCategoryMode
+	options := []acp.SessionConfigOption{
 		{
-			name: "category",
-			options: []acp.SessionConfigOption{{
-				Select: &acp.SessionConfigOptionSelect{
-					Id:       "preferred-model",
-					Category: &modelCategory,
-				},
-			}},
-			want: "preferred-model",
-		},
-		{
-			name: "id fallback",
-			options: []acp.SessionConfigOption{{
-				Select: &acp.SessionConfigOptionSelect{Id: "model"},
-			}},
-			want: "model",
-		},
-		{
-			name: "skips nil option before id fallback",
-			options: []acp.SessionConfigOption{
-				{},
-				{Select: &acp.SessionConfigOptionSelect{Id: "model"}},
+			Select: &acp.SessionConfigOptionSelect{
+				Id:           "model",
+				Category:     &modelCategory,
+				CurrentValue: "gpt-5-codex",
 			},
-			want: "model",
 		},
 		{
-			name: "skips empty category id",
-			options: []acp.SessionConfigOption{
-				{
-					Select: &acp.SessionConfigOptionSelect{
-						Category: &modelCategory,
-					},
-				},
-				{
-					Select: &acp.SessionConfigOptionSelect{Id: "model"},
-				},
+			Select: &acp.SessionConfigOptionSelect{
+				Id:           "mode",
+				Category:     &modeCategory,
+				CurrentValue: "code",
 			},
-			want: "model",
 		},
-		{name: "missing", wantErr: true},
+		{},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := resolveModelConfigID(tc.configID, tc.options)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("resolveModelConfigID() error = nil, want error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("resolveModelConfigID() error = %v", err)
-			}
-			if got != tc.want {
-				t.Fatalf("resolveModelConfigID() = %q, want %q", got, tc.want)
-			}
-		})
+	if !hasSessionConfigOption(options, "model") {
+		t.Fatal("hasSessionConfigOption(model) = false, want true")
+	}
+	if hasSessionConfigOption(options, "missing") {
+		t.Fatal("hasSessionConfigOption(missing) = true, want false")
+	}
+
+	got := collectSessionConfigValues(options, nil)
+	want := []SessionConfigValue{{ID: "model", Value: "gpt-5-codex"}, {ID: "mode", Value: "code"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("collectSessionConfigValues() = %#v, want %#v", got, want)
+	}
+
+	withLegacyMode := collectSessionConfigValues([]acp.SessionConfigOption{{
+		Select: &acp.SessionConfigOptionSelect{
+			Id:           "model",
+			Category:     &modelCategory,
+			CurrentValue: "gpt-5-codex",
+		},
+	}}, &acp.SessionModeState{CurrentModeId: "plan"})
+	wantWithLegacyMode := []SessionConfigValue{{ID: "model", Value: "gpt-5-codex"}, {ID: "mode", Value: "plan"}}
+	if !reflect.DeepEqual(withLegacyMode, wantWithLegacyMode) {
+		t.Fatalf("collectSessionConfigValues(legacy mode) = %#v, want %#v", withLegacyMode, wantWithLegacyMode)
+	}
+}
+
+func TestSessionConfigValueParsing(t *testing.T) {
+	t.Parallel()
+
+	got, err := parseSessionConfigValues([]any{
+		map[string]any{"id": "model", "value": "gpt-5-codex"},
+		map[string]any{"id": "mode", "value": "code"},
+	})
+	if err != nil {
+		t.Fatalf("parseSessionConfigValues() error = %v", err)
+	}
+	want := []SessionConfigValue{{ID: "model", Value: "gpt-5-codex"}, {ID: "mode", Value: "code"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseSessionConfigValues() = %#v, want %#v", got, want)
+	}
+
+	if _, err := parseSessionConfigValues([]any{"bad"}); err == nil {
+		t.Fatal("parseSessionConfigValues(bad element) error = nil, want error")
+	}
+	if _, err := parseSessionConfigValues(map[string]any{}); err == nil {
+		t.Fatal("parseSessionConfigValues(bad root) error = nil, want error")
+	}
+}
+
+func TestMergeSessionConfigValues(t *testing.T) {
+	t.Parallel()
+
+	got := mergeSessionConfigValues(
+		[]SessionConfigValue{{ID: "model", Value: "default"}, {ID: "mode", Value: "code"}},
+		[]SessionConfigValue{{ID: "model", Value: "session"}, {ID: "thought_level", Value: "high"}},
+	)
+	want := []SessionConfigValue{
+		{ID: "model", Value: "session"},
+		{ID: "mode", Value: "code"},
+		{ID: "thought_level", Value: "high"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mergeSessionConfigValues() = %#v, want %#v", got, want)
 	}
 }
 

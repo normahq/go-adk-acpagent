@@ -164,7 +164,7 @@ func TestClientPromptReceivesUpdates(t *testing.T) {
 	}
 }
 
-func TestClientCreateSessionSetsModel(t *testing.T) {
+func TestClientCreateSessionSetsConfigValue(t *testing.T) {
 	client, err := NewClient(context.Background(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
 			"GO_EXPECT_SESSION_MODEL": "openai/gpt-5.4",
@@ -178,7 +178,7 @@ func TestClientCreateSessionSetsModel(t *testing.T) {
 	if _, err := client.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	sess, err := client.CreateSession(context.Background(), t.TempDir(), "openai/gpt-5.4", "", nil)
+	sess, err := client.CreateSession(context.Background(), t.TempDir(), []SessionConfigValue{{ID: "model", Value: "openai/gpt-5.4"}}, nil)
 	if err != nil {
 		t.Fatalf("CreateSession() error = %v", err)
 	}
@@ -202,12 +202,12 @@ func TestClientCreateSessionFailsOnSetConfigOptionUnsupported(t *testing.T) {
 	if _, err := client.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	if _, err := client.CreateSession(context.Background(), t.TempDir(), "openai/gpt-5.4", "", nil); err == nil {
+	if _, err := client.CreateSession(context.Background(), t.TempDir(), []SessionConfigValue{{ID: "model", Value: "openai/gpt-5.4"}}, nil); err == nil {
 		t.Fatal("CreateSession() error = nil, want set config option error")
 	}
 }
 
-func TestClientCreateSessionFailsOnSetModelConfigOptionRequestError(t *testing.T) {
+func TestClientCreateSessionFailsOnSetConfigOptionRequestError(t *testing.T) {
 	client, err := NewClient(context.Background(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
 			"GO_EXPECT_SESSION_MODEL": "different/model",
@@ -221,17 +221,17 @@ func TestClientCreateSessionFailsOnSetModelConfigOptionRequestError(t *testing.T
 	if _, err := client.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	_, err = client.CreateSession(context.Background(), t.TempDir(), "openai/gpt-5.4", "", nil)
+	_, err = client.CreateSession(context.Background(), t.TempDir(), []SessionConfigValue{{ID: "model", Value: "openai/gpt-5.4"}}, nil)
 	if err == nil {
 		t.Fatal("CreateSession() error = nil, want set model error")
 	}
 }
 
-func TestClientCreateSessionUsesCustomModelConfigID(t *testing.T) {
+func TestClientCreateSessionUsesCustomConfigID(t *testing.T) {
 	client, err := NewClient(context.Background(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
-			"GO_EXPECT_MODEL_CONFIG_ID": "provider.model",
-			"GO_EXPECT_SESSION_MODEL":   "openai/gpt-5.4",
+			"GO_EXPECT_CONFIG_ID":     "provider.model",
+			"GO_EXPECT_SESSION_MODEL": "openai/gpt-5.4",
 		}),
 	})
 	if err != nil {
@@ -246,8 +246,8 @@ func TestClientCreateSessionUsesCustomModelConfigID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSessionWithMeta() error = %v", err)
 	}
-	if _, err := client.applySessionModelAndMode(context.Background(), string(resp.SessionId), "openai/gpt-5.4", "provider.model", "", resp.ConfigOptions, resp.Modes); err != nil {
-		t.Fatalf("applySessionModelAndMode() error = %v", err)
+	if _, err := client.applySessionConfig(context.Background(), string(resp.SessionId), []SessionConfigValue{{ID: "provider.model", Value: "openai/gpt-5.4"}}, resp.ConfigOptions, resp.Modes); err != nil {
+		t.Fatalf("applySessionConfig() error = %v", err)
 	}
 }
 
@@ -265,7 +265,7 @@ func TestClientCreateSessionSetsMode(t *testing.T) {
 	if _, err := client.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	sess, err := client.CreateSession(context.Background(), t.TempDir(), "", "code", nil)
+	sess, err := client.CreateSession(context.Background(), t.TempDir(), []SessionConfigValue{{ID: "mode", Value: "code"}}, nil)
 	if err != nil {
 		t.Fatalf("CreateSession() error = %v", err)
 	}
@@ -277,7 +277,8 @@ func TestClientCreateSessionSetsMode(t *testing.T) {
 func TestClientCreateSessionIgnoresSetModeUnsupported(t *testing.T) {
 	client, err := NewClient(context.Background(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
-			"GO_DISABLE_SET_MODE": "1",
+			"GO_DISABLE_SET_MODE":    "1",
+			"GO_EXPECT_SESSION_MODE": "code",
 		}),
 	})
 	if err != nil {
@@ -288,7 +289,7 @@ func TestClientCreateSessionIgnoresSetModeUnsupported(t *testing.T) {
 	if _, err := client.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	sess, err := client.CreateSession(context.Background(), t.TempDir(), "", "code", nil)
+	sess, err := client.CreateSession(context.Background(), t.TempDir(), []SessionConfigValue{{ID: "mode", Value: "code"}}, nil)
 	if err != nil {
 		t.Fatalf("CreateSession() error = %v", err)
 	}
@@ -311,7 +312,7 @@ func TestClientCreateSessionFailsOnSetModeRequestError(t *testing.T) {
 	if _, err := client.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	_, err = client.CreateSession(context.Background(), t.TempDir(), "", "code", nil)
+	_, err = client.CreateSession(context.Background(), t.TempDir(), []SessionConfigValue{{ID: "mode", Value: "code"}}, nil)
 	if err == nil {
 		t.Fatal("CreateSession() error = nil, want set mode error")
 	}
@@ -1002,10 +1003,10 @@ func TestAgentReusesRemoteSession(t *testing.T) {
 
 func TestAgentAppliesModelConfigOption(t *testing.T) {
 	a, err := New(Config{
-		Context:    context.Background(),
-		Command:    helperCommandWithEnv(t, map[string]string{"GO_EXPECT_SESSION_MODEL": "openai/gpt-5.4"}),
-		Model:      "openai/gpt-5.4",
-		WorkingDir: t.TempDir(),
+		Context:       context.Background(),
+		Command:       helperCommandWithEnv(t, map[string]string{"GO_EXPECT_SESSION_MODEL": "openai/gpt-5.4"}),
+		SessionConfig: []SessionConfigValue{{ID: "model", Value: "openai/gpt-5.4"}},
+		WorkingDir:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -1030,8 +1031,9 @@ func TestAgentAppliesModelConfigOption(t *testing.T) {
 	if finalText != testSessionOneHello {
 		t.Fatalf("final text = %q, want %q", finalText, testSessionOneHello)
 	}
-	if got := finalSessionState["model_config_id"]; got != "model" {
-		t.Fatalf("final %s.model_config_id = %v, want model", SessionStateKey, got)
+	wantConfigValues := []map[string]string{{"id": "model", "value": "openai/gpt-5.4"}}
+	if got := finalSessionState["config_values"]; !reflect.DeepEqual(got, wantConfigValues) {
+		t.Fatalf("final %s.config_values = %#v, want %#v", SessionStateKey, got, wantConfigValues)
 	}
 }
 
@@ -3619,9 +3621,9 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	expectedClientName := os.Getenv("GO_EXPECT_CLIENT_NAME")
 	expectedClientVersion := os.Getenv("GO_EXPECT_CLIENT_VERSION")
 	expectedSessionModel := os.Getenv("GO_EXPECT_SESSION_MODEL")
-	expectedModelConfigID := os.Getenv("GO_EXPECT_MODEL_CONFIG_ID")
-	if expectedModelConfigID == "" {
-		expectedModelConfigID = "model"
+	expectedConfigID := os.Getenv("GO_EXPECT_CONFIG_ID")
+	if expectedConfigID == "" {
+		expectedConfigID = "model"
 	}
 	expectedSessionMode := os.Getenv("GO_EXPECT_SESSION_MODE")
 	expectedMCPServers := os.Getenv("GO_EXPECT_MCP_SERVERS")
@@ -3808,7 +3810,8 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			JSONRPC: "2.0",
 			ID:      msg.ID,
 			Result: mustJSON(helperSessionRestoreResponse{
-				ConfigOptions: helperModelConfigOptions(expectedSessionModel, expectedModelConfigID),
+				ConfigOptions: helperModelConfigOptions(expectedSessionModel, expectedConfigID),
+				Modes:         helperSessionModes(expectedSessionMode),
 			}),
 		})
 	}
@@ -3951,7 +3954,8 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				ID:      msg.ID,
 				Result: mustJSON(helperNewSessionResponse{
 					SessionID:     sessionID,
-					ConfigOptions: helperModelConfigOptions(expectedSessionModel, expectedModelConfigID),
+					ConfigOptions: helperModelConfigOptions(expectedSessionModel, expectedConfigID),
+					Modes:         helperSessionModes(expectedSessionMode),
 				}),
 			})
 		case acp.AgentMethodSessionResume:
@@ -3985,7 +3989,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			}
 			var req helperSetSessionConfigOptionRequest
 			must(json.Unmarshal(msg.Params, &req))
-			if expectedModelConfigID != "" && req.ConfigID != expectedModelConfigID {
+			if expectedConfigID != "" && req.ConfigID != expectedConfigID {
 				writeEnvelope(stdout, helperEnvelope{
 					JSONRPC: "2.0",
 					ID:      msg.ID,
@@ -4300,6 +4304,7 @@ type helperAuthenticateResponse struct{}
 
 type helperNewSessionResponse struct {
 	ConfigOptions []acp.SessionConfigOption `json:"configOptions,omitempty"`
+	Modes         *acp.SessionModeState     `json:"modes,omitempty"`
 	SessionID     string                    `json:"sessionId"`
 }
 
@@ -4318,6 +4323,7 @@ type helperSessionRestoreRequest struct {
 
 type helperSessionRestoreResponse struct {
 	ConfigOptions []acp.SessionConfigOption `json:"configOptions,omitempty"`
+	Modes         *acp.SessionModeState     `json:"modes,omitempty"`
 }
 
 type helperPromptResponse struct {
@@ -4351,6 +4357,19 @@ func helperModelConfigOptions(model, configID string) []acp.SessionConfigOption 
 	option.Select.Name = "Model"
 	option.Select.Category = &modelCategory
 	return []acp.SessionConfigOption{option}
+}
+
+func helperSessionModes(mode string) *acp.SessionModeState {
+	if strings.TrimSpace(mode) == "" {
+		return nil
+	}
+	return &acp.SessionModeState{
+		CurrentModeId: acp.SessionModeId(mode),
+		AvailableModes: []acp.SessionMode{{
+			Id:   acp.SessionModeId(mode),
+			Name: mode,
+		}},
+	}
 }
 
 type helperSetSessionModeRequest struct {

@@ -12,9 +12,11 @@ session.
 
 ```go
 map[string]any{
-	"session_id":       "provider-session-id",
-	"model_config_id":  "model",
-	"meta":             map[string]any{"codex": map[string]any{}},
+	"session_id": "provider-session-id",
+	"config_values": []map[string]string{
+		{"id": "model", "value": "gpt-5-codex"},
+	},
+	"meta": map[string]any{"codex": map[string]any{}},
 }
 ```
 
@@ -70,19 +72,25 @@ For new sessions, adapter-provided instructions are added under
 `_meta.codex.baseInstructions` and `_meta.codex.developerInstructions` only
 when those fields are not already present.
 
-## Model Config ID
+## Session Config Values
 
-`Config.Model` is applied through ACP `session/set_config_option`.
+`Config.SessionConfig` is applied through ACP `session/set_config_option`.
+Use it for ACP session-bound choices such as model, mode, or thought level:
 
-The adapter chooses the option ID in this order:
+```go
+agentRuntime, err := acpagent.New(acpagent.Config{
+	Command:    []string{"opencode", "acp"},
+	WorkingDir: "/workspace",
+	SessionConfig: []acpagent.SessionConfigValue{
+		{ID: "model", Value: "opencode/big-pickle"},
+	},
+})
+```
 
-1. `Config.ModelConfigID`
-2. `SessionStateKey.model_config_id`
-3. an ACP session config option with category `model`
-4. an ACP session config option with ID `model`
-
-When the adapter discovers the model option ID, it persists it under
-`SessionStateKey.model_config_id`.
+Set `SessionStateKey.config_values` to override defaults for one ADK session.
+The adapter persists current values returned from ACP `session/new`,
+`session/resume`, `session/set_config_option`, and
+`session/update.config_option`.
 
 ## Output State
 

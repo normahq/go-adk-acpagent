@@ -16,13 +16,11 @@ func main() {
 	}))
 
 	agentRuntime, err := acpagent.New(acpagent.Config{
-		Context:       context.Background(),
-		Command:       []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
-		WorkingDir:    "/workspace",
-		Model:         "openai/gpt-5.4",
-		ModelConfigID: "model",
-		Logger:        logger,
-		Stderr:        io.Discard,
+		Context:    context.Background(),
+		Command:    []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
+		WorkingDir: "/workspace",
+		Logger:     logger,
+		Stderr:     io.Discard,
 	})
 	if err != nil {
 		log.Fatal(err)

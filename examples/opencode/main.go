@@ -17,7 +17,7 @@ func main() {
 
 	agentRuntime, err := acpagent.New(acpagent.Config{
 		Context:    context.Background(),
-		Command:    []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
+		Command:    []string{"opencode", "acp"},
 		WorkingDir: "/workspace",
 		Logger:     logger,
 		Stderr:     io.Discard,

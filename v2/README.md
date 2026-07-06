@@ -45,7 +45,7 @@ func main() {
 	}))
 
 	agentRuntime, err := acpagent.New(acpagent.Config{
-		Command:    []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
+		Command:    []string{"opencode", "acp"},
 		WorkingDir: "/workspace",
 		Logger:     logger,
 		Stderr:     io.Discard,
@@ -68,10 +68,8 @@ diagnostics. `Config.Stderr` is optional ACP subprocess stderr forwarding; set
 it to a file, buffer, `os.Stderr`, or `io.Discard` depending on how much raw
 provider stderr you want to keep.
 
-`Config.Model` selects an ACP session model through `session/set_config_option`.
-By default the adapter discovers a select config option with category `model`
-from `session/new` or `session/resume`; set `Config.ModelConfigID` when a
-provider uses a known custom config option id. The lower-level client API is
+`Config.SessionConfig` optionally applies ACP session config values through
+`session/set_config_option`. The lower-level client API is
 `Client.SetSessionConfigOption`.
 
 ACP provider error metadata helpers are available from:
@@ -88,6 +86,7 @@ ACP provider failures are projected onto ADK event `ErrorCode` and
 
 Runnable examples are included under:
 
+- [`examples/opencode`](examples/opencode)
 - [`examples/codex`](examples/codex)
 
 The examples show the production defaults expected by this adapter: pass a
@@ -101,19 +100,19 @@ Reference documentation:
 
 - [Documentation index](../docs/README.md)
 - [Concepts](../docs/concepts.md): what the adapter does, why it exists, and how
-  ACP sessions map to ADK sessions.
-- [Provider recipes](../docs/provider-recipes.md): Codex, OpenCode, Claude, PI,
+  ACP sessions and config values map to ADK sessions.
+- [Provider recipes](../docs/provider-recipes.md): OpenCode, Codex, Claude, PI,
   and generic ACP command examples.
 - [Session state](../docs/session-state.md): cwd overrides, ACP session
-  identity, model config IDs, metadata, plan snapshots, and output state.
+  identity, config values, metadata, plan snapshots, and output state.
 - [Troubleshooting](../docs/troubleshooting.md): process startup, stderr,
-  model selection, permissions, provider errors, and ACP inspection.
+  session config, permissions, provider errors, and ACP inspection.
 - [Migration from Norma](../docs/migration-from-norma.md): import path and
   config mapping from the deprecated Norma wrapper.
 
 ## Session State
 
-Use `acpagent.CWDStateKey` (`"cwd"`) to override the ACP session working directory per ADK session. ACP session metadata is stored under `acpagent.SessionStateKey`, including the ACP `session_id`, optional `_meta`, and optional `model_config_id`. ACP plan snapshots are stored under `acpagent.PlanStateKey`.
+Use `acpagent.CWDStateKey` (`"cwd"`) to override the ACP session working directory per ADK session. ACP session metadata is stored under `acpagent.SessionStateKey`, including the ACP `session_id`, optional `_meta`, and optional `config_values`. ACP plan snapshots are stored under `acpagent.PlanStateKey`.
 
 ## Production Notes
 
@@ -122,10 +121,8 @@ Use `acpagent.CWDStateKey` (`"cwd"`) to override the ACP session working directo
   `os.Stderr` or another writer is useful when diagnosing provider startup.
 - Keep `Config.WorkingDir` or `CWDStateKey` pointed at an existing directory.
 - Treat `SessionStateKey` as adapter-owned except for documented `_meta` and
-  `model_config_id` overrides.
-- `Config.Model` is applied through ACP `session/set_config_option`; set
-  `Config.ModelConfigID` only when a provider exposes a nonstandard model
-  option id.
+  `config_values` overrides.
+- `Config.SessionConfig` is applied through ACP `session/set_config_option`.
 
 ## Tests
 

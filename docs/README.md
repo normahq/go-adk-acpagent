@@ -7,12 +7,12 @@ the adapter into a real ADK application.
 
 - [Concepts](concepts.md): what the adapter does, why it exists, and how ACP
   sessions map to ADK sessions.
-- [Provider recipes](provider-recipes.md): Codex, OpenCode, Claude, PI, and
+- [Provider recipes](provider-recipes.md): OpenCode, Codex, Claude, PI, and
   generic ACP command examples.
 - [Session state](session-state.md): cwd overrides, ACP session identity,
-  metadata, model config IDs, plan snapshots, and output state.
-- [Troubleshooting](troubleshooting.md): process startup, stderr, model
-  selection, permissions, provider errors, and ACP inspection.
+  metadata, config values, plan snapshots, and output state.
+- [Troubleshooting](troubleshooting.md): process startup, stderr, session
+  config, permissions, provider errors, and ACP inspection.
 - [Migration from Norma](migration-from-norma.md): import path and config
   mapping from the deprecated Norma wrapper.
 
