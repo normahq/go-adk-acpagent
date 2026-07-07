@@ -1,6 +1,7 @@
 package acpagent
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -8,8 +9,8 @@ import (
 	"strings"
 
 	acp "github.com/coder/acp-go-sdk"
-	"github.com/normahq/go-adk-acpagent/acperror"
-	"google.golang.org/adk/session"
+	"github.com/normahq/go-adk-acpagent/v2/acperror"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -167,7 +168,7 @@ func mapACPLegacyUsageUpdate(logger logger, invocationID string, update map[stri
 		logger.Debug().Interface("update", update).Msg("ignoring usage_update with no token counts")
 		return nil, false
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.UsageMetadata = usage
 	ev.Partial = true
 	return ev, true
@@ -178,7 +179,7 @@ func mapACPAgentMessageChunk(logger logger, invocationID string, chunk *acp.Sess
 	if !ok {
 		return nil, false
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	ev.Partial = true
 
@@ -216,7 +217,7 @@ func mapACPUserMessageChunk(logger logger, invocationID string, chunk *acp.Sessi
 	if !ok {
 		return nil, false
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleUser)
 	ev.Partial = true
 	return ev, true
@@ -228,7 +229,7 @@ func mapACPAgentThoughtChunk(logger logger, invocationID string, chunk *acp.Sess
 		return nil, false
 	}
 	part.Thought = true
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	ev.Partial = true
 	return ev, true
@@ -250,7 +251,7 @@ func mapACPToolCall(invocationID string, tool *acp.SessionUpdateToolCall) (*sess
 			Args: args,
 		},
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	if isACPToolStatusLongRunning(tool.Status) {
 		ev.LongRunningToolIDs = []string{string(tool.ToolCallId)}
@@ -274,7 +275,7 @@ func mapACPToolCallUpdate(invocationID string, tool *acp.SessionToolCallUpdate) 
 			Response: response,
 		},
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	if tool.Status != nil && isACPToolStatusLongRunning(*tool.Status) {
 		ev.LongRunningToolIDs = []string{string(tool.ToolCallId)}
@@ -294,7 +295,7 @@ func mapACPPlanUpdate(_ logger, invocationID string, plan *acp.SessionUpdatePlan
 			"priority": entry.Priority,
 		})
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.Actions.StateDelta[PlanStateKey] = map[string]any{
 		acpPlanEntriesKey: entries,
 	}
@@ -310,7 +311,7 @@ func mapACPConfigOptionUpdate(invocationID, sessionID string, update *acp.Sessio
 	if len(values) == 0 {
 		return nil, false
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues(sessionID, "", values)
 	ev.Partial = true
 	return ev, true
@@ -324,7 +325,7 @@ func mapACPCurrentModeUpdate(invocationID, sessionID string, update *acp.Session
 	if mode == "" {
 		return nil, false
 	}
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues(sessionID, "", []SessionConfigValue{{ID: "mode", Value: mode}})
 	ev.Partial = true
 	return ev, true

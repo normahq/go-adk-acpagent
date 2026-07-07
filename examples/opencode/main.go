@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"os"
 
-	acpagent "github.com/normahq/go-adk-acpagent"
+	acpagent "github.com/normahq/go-adk-acpagent/v2"
 )
 
 func main() {

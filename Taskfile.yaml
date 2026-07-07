@@ -18,24 +18,20 @@ tasks:
       - security
 
   test:
-    desc: Run unit tests for both modules
+    desc: Run unit tests
     cmds:
       - go test ./...
-      - go -C v2 test ./...
 
   test-race:
-    desc: Run race tests for both modules
+    desc: Run race tests
     cmds:
       - go test -race ./...
-      - go -C v2 test -race ./...
 
   coverage:
-    desc: Run coverage checks for both modules
+    desc: Run coverage checks
     cmds:
       - go test ./... -coverprofile=coverage.out
       - awk -v coverage="$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $3); print $3}')" 'BEGIN { if (coverage < 95.0) exit 1 }'
-      - go -C v2 test ./... -coverprofile=coverage.out
-      - awk -v coverage="$(go -C v2 tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $3); print $3}')" 'BEGIN { if (coverage < 95.0) exit 1 }'
 
   install-tools:
     desc: Install pinned local tools
@@ -50,29 +46,24 @@ tasks:
       - .bin/govulncheck
 
   lint:
-    desc: Run golangci-lint for both modules
+    desc: Run golangci-lint
     deps:
       - install-tools
     cmds:
       - ./.bin/golangci-lint run ./...
-      - cd v2 && ../.bin/golangci-lint run ./...
 
   security:
-    desc: Run module verification and govulncheck for both modules
+    desc: Run module verification and govulncheck
     deps:
       - install-tools
     cmds:
       - go mod download
       - go mod verify
-      - go -C v2 mod download
-      - go -C v2 mod verify
       - ./.bin/govulncheck ./...
-      - cd v2 && ../.bin/govulncheck ./...
     dir: '{{.TASKFILE_DIR}}'
 
   tidy:
-    desc: Tidy both modules
+    desc: Tidy modules
     cmds:
       - go mod tidy
-      - go -C v2 mod tidy
       - go -C tools mod tidy

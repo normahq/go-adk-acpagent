@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/session"
 )
 
 // SessionConfigValue is an ACP session configuration value to apply to each

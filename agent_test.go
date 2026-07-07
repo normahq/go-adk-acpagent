@@ -20,11 +20,11 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
-	"github.com/normahq/go-adk-acpagent/acperror"
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/artifact"
-	runnerpkg "google.golang.org/adk/runner"
-	"google.golang.org/adk/session"
+	"github.com/normahq/go-adk-acpagent/v2/acperror"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/artifact"
+	runnerpkg "google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -1045,7 +1045,7 @@ func TestAgentBeforeAgentCallbacksShortCircuitACPPrompt(t *testing.T) {
 		}),
 		WorkingDir: t.TempDir(),
 		BeforeAgentCallbacks: []agent.BeforeAgentCallback{
-			func(agent.CallbackContext) (*genai.Content, error) {
+			func(agent.Context) (*genai.Content, error) {
 				return genai.NewContentFromText("before-callback", genai.RoleModel), nil
 			},
 		},
@@ -1087,7 +1087,7 @@ func TestAgentAfterAgentCallbacksEmitPostRunEvent(t *testing.T) {
 		Command:    helperCommand(t),
 		WorkingDir: t.TempDir(),
 		AfterAgentCallbacks: []agent.AfterAgentCallback{
-			func(agent.CallbackContext) (*genai.Content, error) {
+			func(agent.Context) (*genai.Content, error) {
 				return genai.NewContentFromText("after-callback", genai.RoleModel), nil
 			},
 		},
@@ -3577,7 +3577,7 @@ func TestAgentRunStoresOutputKeyInFinalStateDelta(t *testing.T) {
 
 func TestAgentMaybeSaveOutputToStateSkipsEmptyOutput(t *testing.T) {
 	a := &Agent{outputKey: "result"}
-	ev := session.NewEvent("inv-1")
+	ev := session.NewEvent(context.Background(), "inv-1")
 	a.maybeSaveOutputToState(ev, "")
 	if _, ok := ev.Actions.StateDelta["result"]; ok {
 		t.Fatalf("state delta unexpectedly contains result for empty output")

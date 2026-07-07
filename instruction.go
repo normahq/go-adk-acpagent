@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 )
 
 // InstructionProvider allows ACP instructions to be created dynamically using

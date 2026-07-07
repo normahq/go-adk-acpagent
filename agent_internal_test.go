@@ -13,8 +13,8 @@ import (
 	"testing"
 
 	acp "github.com/coder/acp-go-sdk"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -509,19 +509,19 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	(&Agent{outputKey: "out"}).persistSessionStateDelta(nil, "session-1", "{}", nil)
 	(&Agent{outputKey: "out"}).maybeSaveOutputToState(nil, "text")
 
-	emptyRemote := session.NewEvent("inv-empty-remote")
+	emptyRemote := session.NewEvent(context.Background(), "inv-empty-remote")
 	(&Agent{outputKey: "out"}).persistSessionStateDelta(emptyRemote, " ", "{}", nil)
 	if len(emptyRemote.Actions.StateDelta) != 0 {
 		t.Fatalf("empty remote StateDelta = %#v, want empty", emptyRemote.Actions.StateDelta)
 	}
 
-	withoutOutputKey := session.NewEvent("inv-without-output")
+	withoutOutputKey := session.NewEvent(context.Background(), "inv-without-output")
 	(&Agent{}).maybeSaveOutputToState(withoutOutputKey, "text")
 	if len(withoutOutputKey.Actions.StateDelta) != 0 {
 		t.Fatalf("without output key StateDelta = %#v, want empty", withoutOutputKey.Actions.StateDelta)
 	}
 
-	partial := session.NewEvent("inv-partial")
+	partial := session.NewEvent(context.Background(), "inv-partial")
 	partial.Partial = true
 	(&Agent{outputKey: "out"}).persistSessionStateDelta(partial, "session-1", `{"x":1}`, nil)
 	(&Agent{outputKey: "out"}).maybeSaveOutputToState(partial, "text")
@@ -529,7 +529,7 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 		t.Fatalf("partial StateDelta = %#v, want empty", partial.Actions.StateDelta)
 	}
 
-	ev := session.NewEvent("inv")
+	ev := session.NewEvent(context.Background(), "inv")
 	agent := &Agent{outputKey: "out"}
 	agent.persistSessionStateDelta(ev, "session-1", `{"x":1}`, nil)
 	agent.maybeSaveOutputToState(ev, "visible")
@@ -541,7 +541,7 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 		t.Fatalf("output StateDelta = %#v, want visible", got)
 	}
 
-	evWithModel := session.NewEvent("inv-model")
+	evWithModel := session.NewEvent(context.Background(), "inv-model")
 	agent.persistSessionStateDelta(evWithModel, "session-1", "{}", modelConfig)
 	wantACPStateWithModel := map[string]any{
 		"session_id": "session-1",
@@ -1030,14 +1030,26 @@ func (c testInvocationContext) RunConfig() *adkagent.RunConfig {
 	return nil
 }
 
+func (c testInvocationContext) IsolationScope() string {
+	return ""
+}
+
 func (c testInvocationContext) EndInvocation() {}
 
 func (c testInvocationContext) Ended() bool {
 	return false
 }
 
+func (c testInvocationContext) ResumedInput(string) (any, bool) {
+	return nil, false
+}
+
 func (c testInvocationContext) WithContext(ctx context.Context) adkagent.InvocationContext {
 	c.Context = ctx
+	return c
+}
+
+func (c testInvocationContext) WithICDelta(*adkagent.InvocationContextDelta) adkagent.InvocationContext {
 	return c
 }
 

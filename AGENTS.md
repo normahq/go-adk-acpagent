@@ -1,6 +1,6 @@
 # Agent Guidelines
 
-This repository contains `github.com/normahq/go-adk-acpagent`, a Go library
+This repository contains `github.com/normahq/go-adk-acpagent/v2`, a Go library
 that provides a Google ADK agent implementation backed by an Agent Client
 Protocol (ACP) coding agent.
 

@@ -22,14 +22,7 @@ jobs:
         run: go mod download
       - name: Verify modules
         run: go mod verify
-      - name: Download v2 modules
-        run: go -C v2 mod download
-      - name: Verify v2 modules
-        run: go -C v2 mod verify
       - name: Install govulncheck
         run: GOBIN="$PWD/.bin" go -C tools install golang.org/x/vuln/cmd/govulncheck
       - name: Run govulncheck
         run: ./.bin/govulncheck ./...
-      - name: Run govulncheck v2
-        run: ../.bin/govulncheck ./...
-        working-directory: v2

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 func TestReadonlyInvocationContextNil(t *testing.T) {

@@ -14,15 +14,8 @@ jobs:
           go-version-file: 'go.mod'
       - name: Test
         run: go test -v -race ./...
-      - name: Test v2
-        run: go -C v2 test -v -race ./...
       - name: Coverage
         run: |
           go test ./... -coverprofile=coverage.out
           coverage="$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $3); print $3}')"
-          awk -v coverage="$coverage" 'BEGIN { if (coverage < 95.0) exit 1 }'
-      - name: Coverage v2
-        run: |
-          go -C v2 test ./... -coverprofile=coverage.out
-          coverage="$(go -C v2 tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $3); print $3}')"
           awk -v coverage="$coverage" 'BEGIN { if (coverage < 95.0) exit 1 }'

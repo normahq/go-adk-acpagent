@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	acp "github.com/coder/acp-go-sdk"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -236,7 +236,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		if remote.fresh {
 			promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 		}
-		stateEvent := session.NewEvent(ctx.InvocationID())
+		stateEvent := session.NewEvent(context.Background(), ctx.InvocationID())
 		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
 		if len(stateEvent.Actions.StateDelta) > 0 {
 			a.logADKEvent(logger, stateEvent, "yielding acp session state event")
@@ -257,7 +257,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			if remote.fresh {
 				promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 			}
-			stateEvent := session.NewEvent(ctx.InvocationID())
+			stateEvent := session.NewEvent(context.Background(), ctx.InvocationID())
 			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
 			if len(stateEvent.Actions.StateDelta) > 0 {
 				a.logADKEvent(logger, stateEvent, "yielding recovered acp session state event")
@@ -277,7 +277,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			}
 		}
 
-		ev := session.NewEvent(ctx.InvocationID())
+		ev := session.NewEvent(context.Background(), ctx.InvocationID())
 		if result.promptResult != nil {
 			ev.FinishReason = mapACPStopReasonToFinishReason(result.promptResult.Response.StopReason)
 			ev.UsageMetadata = mapACPUsageToUsageMetadata(result.promptResult.Usage)

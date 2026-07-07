@@ -1,11 +1,11 @@
-module github.com/normahq/go-adk-acpagent
+module github.com/normahq/go-adk-acpagent/v2
 
 go 1.26.4
 
 require (
 	github.com/coder/acp-go-sdk v0.13.5
 	github.com/modelcontextprotocol/go-sdk v1.5.0
-	google.golang.org/adk v1.3.0
+	google.golang.org/adk/v2 v2.0.0
 	google.golang.org/genai v1.57.0
 )
 
@@ -31,13 +31,13 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
-	go.opentelemetry.io/otel/log v0.16.0 // indirect
+	go.opentelemetry.io/otel/log v0.19.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
-	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/api v0.279.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260511170946-3700d4141b60 // indirect
