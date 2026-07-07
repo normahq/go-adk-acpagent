@@ -274,6 +274,54 @@ func TestClientCreateSessionSetsMode(t *testing.T) {
 	}
 }
 
+func TestClientCreateSessionSetsModeConfigOption(t *testing.T) {
+	client, err := NewClient(context.Background(), ClientConfig{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_ADVERTISE_MODE_CONFIG_OPTION": "1",
+			"GO_EXPECT_SESSION_MODE":          "code",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	sess, err := client.CreateSession(context.Background(), t.TempDir(), []SessionConfigValue{{ID: "mode", Value: "code"}}, nil)
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	if got := strings.TrimSpace(string(sess.SessionId)); got == "" {
+		t.Fatal("CreateSession() returned empty session id")
+	}
+}
+
+func TestClientCreateSessionSetsBooleanConfigOption(t *testing.T) {
+	client, err := NewClient(context.Background(), ClientConfig{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_EXPECT_BOOLEAN_CONFIG_ID":    "fast_mode",
+			"GO_EXPECT_BOOLEAN_CONFIG_VALUE": "false",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	sess, err := client.CreateSession(context.Background(), t.TempDir(), []SessionConfigValue{BooleanSessionConfigValue("fast_mode", false)}, nil)
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	if got := strings.TrimSpace(string(sess.SessionId)); got == "" {
+		t.Fatal("CreateSession() returned empty session id")
+	}
+}
+
 func TestClientCreateSessionIgnoresSetModeUnsupported(t *testing.T) {
 	client, err := NewClient(context.Background(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
@@ -1031,7 +1079,7 @@ func TestAgentAppliesModelConfigOption(t *testing.T) {
 	if finalText != testSessionOneHello {
 		t.Fatalf("final text = %q, want %q", finalText, testSessionOneHello)
 	}
-	wantConfigValues := []map[string]string{{"id": "model", "value": "openai/gpt-5.4"}}
+	wantConfigValues := []map[string]any{{"id": "model", "value": "openai/gpt-5.4"}}
 	if got := finalSessionState["config_values"]; !reflect.DeepEqual(got, wantConfigValues) {
 		t.Fatalf("final %s.config_values = %#v, want %#v", SessionStateKey, got, wantConfigValues)
 	}
@@ -3621,11 +3669,14 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	expectedClientName := os.Getenv("GO_EXPECT_CLIENT_NAME")
 	expectedClientVersion := os.Getenv("GO_EXPECT_CLIENT_VERSION")
 	expectedSessionModel := os.Getenv("GO_EXPECT_SESSION_MODEL")
+	expectedBooleanConfigID := os.Getenv("GO_EXPECT_BOOLEAN_CONFIG_ID")
+	expectedBooleanConfigValueRaw := os.Getenv("GO_EXPECT_BOOLEAN_CONFIG_VALUE")
 	expectedConfigID := os.Getenv("GO_EXPECT_CONFIG_ID")
 	if expectedConfigID == "" {
 		expectedConfigID = "model"
 	}
 	expectedSessionMode := os.Getenv("GO_EXPECT_SESSION_MODE")
+	advertiseModeConfigOption := os.Getenv("GO_ADVERTISE_MODE_CONFIG_OPTION") == "1"
 	expectedMCPServers := os.Getenv("GO_EXPECT_MCP_SERVERS")
 	expectedMCPServersRaw := os.Getenv("GO_EXPECT_MCP_SERVERS_RAW")
 	expectedSessionCWD := os.Getenv("GO_EXPECT_SESSION_CWD")
@@ -3810,7 +3861,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			JSONRPC: "2.0",
 			ID:      msg.ID,
 			Result: mustJSON(helperSessionRestoreResponse{
-				ConfigOptions: helperModelConfigOptions(expectedSessionModel, expectedConfigID),
+				ConfigOptions: helperSessionConfigOptions(expectedSessionModel, expectedConfigID, expectedSessionMode, advertiseModeConfigOption, expectedBooleanConfigID, expectedBooleanConfigValueRaw),
 				Modes:         helperSessionModes(expectedSessionMode),
 			}),
 		})
@@ -3954,7 +4005,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				ID:      msg.ID,
 				Result: mustJSON(helperNewSessionResponse{
 					SessionID:     sessionID,
-					ConfigOptions: helperModelConfigOptions(expectedSessionModel, expectedConfigID),
+					ConfigOptions: helperSessionConfigOptions(expectedSessionModel, expectedConfigID, expectedSessionMode, advertiseModeConfigOption, expectedBooleanConfigID, expectedBooleanConfigValueRaw),
 					Modes:         helperSessionModes(expectedSessionMode),
 				}),
 			})
@@ -3989,7 +4040,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			}
 			var req helperSetSessionConfigOptionRequest
 			must(json.Unmarshal(msg.Params, &req))
-			if expectedConfigID != "" && req.ConfigID != expectedConfigID {
+			if expectedSessionModel != "" && expectedConfigID != "" && req.ConfigID != expectedConfigID {
 				writeEnvelope(stdout, helperEnvelope{
 					JSONRPC: "2.0",
 					ID:      msg.ID,
@@ -3997,15 +4048,44 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				})
 				continue
 			}
-			if expectedSessionModel != "" && req.Value != expectedSessionModel {
+			reqValue := req.ValueString()
+			if expectedSessionModel != "" && req.ConfigID == expectedConfigID && reqValue != expectedSessionModel {
 				writeEnvelope(stdout, helperEnvelope{
 					JSONRPC: "2.0",
 					ID:      msg.ID,
-					Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected session model: %s", req.Value)},
+					Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected session model: %s", reqValue)},
 				})
 				continue
 			}
-			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperSetSessionConfigOptionResponse{ConfigOptions: helperModelConfigOptions(req.Value, req.ConfigID)})})
+			if advertiseModeConfigOption && req.ConfigID == "mode" && expectedSessionMode != "" && reqValue != expectedSessionMode {
+				writeEnvelope(stdout, helperEnvelope{
+					JSONRPC: "2.0",
+					ID:      msg.ID,
+					Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected session mode config value: %s", reqValue)},
+				})
+				continue
+			}
+			if expectedBooleanConfigID != "" && req.ConfigID == expectedBooleanConfigID {
+				expectedBooleanConfigValue := expectedBooleanConfigValueRaw == "true"
+				if req.Type != "boolean" {
+					writeEnvelope(stdout, helperEnvelope{
+						JSONRPC: "2.0",
+						ID:      msg.ID,
+						Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected session config type: %s", req.Type)},
+					})
+					continue
+				}
+				reqBool := req.ValueBool()
+				if reqBool == nil || *reqBool != expectedBooleanConfigValue {
+					writeEnvelope(stdout, helperEnvelope{
+						JSONRPC: "2.0",
+						ID:      msg.ID,
+						Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected boolean session config value: %v", reqBool)},
+					})
+					continue
+				}
+			}
+			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperSetSessionConfigOptionResponse{ConfigOptions: helperSessionConfigOptions(expectedSessionModel, expectedConfigID, expectedSessionMode, advertiseModeConfigOption, expectedBooleanConfigID, expectedBooleanConfigValueRaw)})})
 		case acp.AgentMethodSessionSetMode:
 			if disableSetMode {
 				writeEnvelope(stdout, helperEnvelope{
@@ -4331,13 +4411,60 @@ type helperPromptResponse struct {
 }
 
 type helperSetSessionConfigOptionRequest struct {
-	SessionID string `json:"sessionId"`
-	ConfigID  string `json:"configId"`
-	Value     string `json:"value"`
+	SessionID string          `json:"sessionId"`
+	ConfigID  string          `json:"configId"`
+	Type      string          `json:"type,omitempty"`
+	ValueRaw  json.RawMessage `json:"value"`
+}
+
+func (r helperSetSessionConfigOptionRequest) ValueString() string {
+	var value string
+	_ = json.Unmarshal(r.ValueRaw, &value)
+	return value
+}
+
+func (r helperSetSessionConfigOptionRequest) ValueBool() *bool {
+	var value bool
+	if err := json.Unmarshal(r.ValueRaw, &value); err != nil {
+		return nil
+	}
+	return &value
 }
 
 type helperSetSessionConfigOptionResponse struct {
 	ConfigOptions []acp.SessionConfigOption `json:"configOptions"`
+}
+
+func helperSessionConfigOptions(model, configID, mode string, includeMode bool, booleanConfigID, booleanValueRaw string) []acp.SessionConfigOption {
+	options := helperModelConfigOptions(model, configID)
+	if strings.TrimSpace(mode) != "" && includeMode {
+		modeCategory := acp.SessionConfigOptionCategoryMode
+		option := acp.NewSessionConfigOptionSelect(
+			acp.SessionConfigValueId(mode),
+			acp.SessionConfigSelectOptions{
+				Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
+					{Name: mode, Value: acp.SessionConfigValueId(mode)},
+				},
+			},
+		)
+		option.Select.Id = "mode"
+		option.Select.Name = "Mode"
+		option.Select.Category = &modeCategory
+		options = append(options, option)
+	}
+	if strings.TrimSpace(booleanConfigID) != "" {
+		modelConfigCategory := acp.SessionConfigOptionCategory("model_config")
+		options = append(options, acp.SessionConfigOption{
+			Boolean: &acp.SessionConfigOptionBoolean{
+				Id:           acp.SessionConfigId(booleanConfigID),
+				Name:         "Fast mode",
+				Category:     &modelConfigCategory,
+				CurrentValue: booleanValueRaw == "true",
+				Type:         "boolean",
+			},
+		})
+	}
+	return options
 }
 
 func helperModelConfigOptions(model, configID string) []acp.SessionConfigOption {

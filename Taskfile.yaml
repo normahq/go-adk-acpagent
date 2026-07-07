@@ -27,6 +27,22 @@ tasks:
     cmds:
       - go test -race ./...
 
+  test:integration:
+    desc: Run provider integration tests
+    deps:
+      - test:integration:codex
+      - test:integration:opencode
+
+  test:integration:codex:
+    desc: Run Codex ACP integration tests
+    cmds:
+      - go test -tags 'integration codex' ./...
+
+  test:integration:opencode:
+    desc: Run OpenCode ACP integration tests
+    cmds:
+      - go test -tags 'integration opencode' ./...
+
   coverage:
     desc: Run coverage checks
     cmds:

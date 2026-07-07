@@ -87,7 +87,8 @@ func main() {
 | Generic ACP | Any executable that speaks ACP on stdin/stdout. |
 
 Runnable examples are available for [OpenCode](examples/opencode),
-[Codex](examples/codex), and [Pi](examples/pi).
+[Codex](examples/codex), [Claude Code](examples/claude), and
+[Pi](examples/pi).
 
 ## Configuration Cheatsheet
 
@@ -125,7 +126,8 @@ import "github.com/normahq/go-adk-acpagent/v2/acperror"
 - Call `Close` during shutdown so the ACP subprocess exits cleanly.
 - Keep ACP protocol messages on stdout and provider logs on stderr.
 - Use `SessionConfig` for session-bound model, mode, thought-level, or
-  provider-specific choices.
+  provider-specific choices. Use `SelectSessionConfigValue` for select options
+  and `BooleanSessionConfigValue` for boolean options.
 - Treat `SessionStateKey` as adapter-owned except for documented `_meta`,
   `config_values`, and cwd overrides.
 
@@ -138,3 +140,11 @@ go tool cover -func=coverage.out
 ```
 
 CI requires at least 95% total statement coverage.
+
+Provider integration tests are opt-in because they require external ACP
+commands and credentials:
+
+```sh
+task test:integration:codex
+task test:integration:opencode
+```

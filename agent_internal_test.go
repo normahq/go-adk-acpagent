@@ -481,7 +481,7 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	}
 	wantLiveACPState := map[string]any{
 		"session_id": "session-1",
-		"config_values": []map[string]string{
+		"config_values": []map[string]any{
 			{"id": "model", "value": "openai/gpt-5.4"},
 		},
 		"meta": map[string]any{"a": float64(1), "b": float64(2)},
@@ -545,7 +545,7 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	agent.persistSessionStateDelta(evWithModel, "session-1", "{}", modelConfig)
 	wantACPStateWithModel := map[string]any{
 		"session_id": "session-1",
-		"config_values": []map[string]string{
+		"config_values": []map[string]any{
 			{"id": "model", "value": "openai/gpt-5.4"},
 		},
 	}
@@ -579,7 +579,7 @@ func TestSessionConfigUpdateMappers(t *testing.T) {
 	} else {
 		want := map[string]any{
 			"session_id": "session-1",
-			"config_values": []map[string]string{
+			"config_values": []map[string]any{
 				{"id": "model", "value": "gpt-5-codex"},
 			},
 		}
@@ -588,12 +588,33 @@ func TestSessionConfigUpdateMappers(t *testing.T) {
 		}
 	}
 
+	if ev, ok := mapACPConfigOptionUpdate("inv-bool", "session-1", &acp.SessionConfigOptionUpdate{
+		ConfigOptions: []acp.SessionConfigOption{{
+			Boolean: &acp.SessionConfigOptionBoolean{
+				Id:           "fast_mode",
+				CurrentValue: true,
+			},
+		}},
+	}); !ok {
+		t.Fatal("mapACPConfigOptionUpdate(boolean) ok = false, want true")
+	} else {
+		want := map[string]any{
+			"session_id": "session-1",
+			"config_values": []map[string]any{
+				{"id": "fast_mode", "type": "boolean", "value": true},
+			},
+		}
+		if !ev.Partial || !reflect.DeepEqual(ev.Actions.StateDelta[SessionStateKey], want) {
+			t.Fatalf("mapACPConfigOptionUpdate(boolean) state = %#v, partial = %v; want %#v true", ev.Actions.StateDelta[SessionStateKey], ev.Partial, want)
+		}
+	}
+
 	if ev, ok := mapACPCurrentModeUpdate("inv-2", "session-1", &acp.SessionCurrentModeUpdate{CurrentModeId: "coding"}); !ok {
 		t.Fatal("mapACPCurrentModeUpdate() ok = false, want true")
 	} else {
 		want := map[string]any{
 			"session_id": "session-1",
-			"config_values": []map[string]string{
+			"config_values": []map[string]any{
 				{"id": "mode", "value": "coding"},
 			},
 		}

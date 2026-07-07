@@ -82,7 +82,8 @@ agentRuntime, err := acpagent.New(acpagent.Config{
 	Command:    []string{"opencode", "acp"},
 	WorkingDir: "/workspace",
 	SessionConfig: []acpagent.SessionConfigValue{
-		{ID: "model", Value: "opencode/big-pickle"},
+		acpagent.SelectSessionConfigValue("model", "opencode/big-pickle"),
+		acpagent.BooleanSessionConfigValue("fast_mode", true),
 	},
 })
 ```
@@ -90,7 +91,9 @@ agentRuntime, err := acpagent.New(acpagent.Config{
 Set `SessionStateKey.config_values` to override defaults for one ADK session.
 The adapter persists current values returned from ACP `session/new`,
 `session/resume`, `session/set_config_option`, and
-`session/update.config_option`.
+`session/update.config_option`. Select values are stored as
+`{"id":"model","value":"..."}`; boolean values are stored as
+`{"id":"fast_mode","type":"boolean","value":true}`.
 
 ## Output State
 

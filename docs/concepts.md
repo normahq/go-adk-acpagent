@@ -54,7 +54,9 @@ does not project that replay into ADK-visible history.
 
 `Config.SessionConfig` is applied with ACP `session/set_config_option`. ACP
 session config options are session-bound and can represent model, mode, thought
-level, or provider-specific controls.
+level, or provider-specific controls. Select options use
+`SessionConfigValue{ID: "...", Value: "..."}`; boolean options use
+`BooleanSessionConfigValue("...", true)`.
 
 For ACP agents that expose modes only through `session/set_mode`, the adapter
 uses that method as a fallback for `SessionConfigValue{ID: "mode"}`. If a

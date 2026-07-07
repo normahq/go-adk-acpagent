@@ -264,6 +264,7 @@ func TestSessionConfigOptionHelpers(t *testing.T) {
 
 	modelCategory := acp.SessionConfigOptionCategoryModel
 	modeCategory := acp.SessionConfigOptionCategoryMode
+	modelConfigCategory := acp.SessionConfigOptionCategory("model_config")
 	options := []acp.SessionConfigOption{
 		{
 			Select: &acp.SessionConfigOptionSelect{
@@ -279,6 +280,13 @@ func TestSessionConfigOptionHelpers(t *testing.T) {
 				CurrentValue: "code",
 			},
 		},
+		{
+			Boolean: &acp.SessionConfigOptionBoolean{
+				Id:           "fast_mode",
+				Category:     &modelConfigCategory,
+				CurrentValue: true,
+			},
+		},
 		{},
 	}
 
@@ -288,9 +296,16 @@ func TestSessionConfigOptionHelpers(t *testing.T) {
 	if hasSessionConfigOption(options, "missing") {
 		t.Fatal("hasSessionConfigOption(missing) = true, want false")
 	}
+	if !hasSessionConfigOption(options, "fast_mode") {
+		t.Fatal("hasSessionConfigOption(fast_mode) = false, want true")
+	}
 
 	got := collectSessionConfigValues(options, nil)
-	want := []SessionConfigValue{{ID: "model", Value: "gpt-5-codex"}, {ID: "mode", Value: "code"}}
+	want := []SessionConfigValue{
+		{ID: "model", Value: "gpt-5-codex"},
+		{ID: "mode", Value: "code"},
+		BooleanSessionConfigValue("fast_mode", true),
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("collectSessionConfigValues() = %#v, want %#v", got, want)
 	}
@@ -318,8 +333,8 @@ func TestSessionConfigValueParsing(t *testing.T) {
 	}{
 		{
 			name: "typed values",
-			raw:  []SessionConfigValue{{ID: " model ", Value: " gpt-5-codex "}, {ID: "", Value: "ignored"}},
-			want: []SessionConfigValue{{ID: "model", Value: "gpt-5-codex"}},
+			raw:  []SessionConfigValue{{ID: " model ", Value: " gpt-5-codex "}, {ID: "", Value: "ignored"}, BooleanSessionConfigValue(" fast_mode ", true)},
+			want: []SessionConfigValue{{ID: "model", Value: "gpt-5-codex"}, BooleanSessionConfigValue("fast_mode", true)},
 		},
 		{
 			name: "string maps",
@@ -330,6 +345,11 @@ func TestSessionConfigValueParsing(t *testing.T) {
 			name: "any maps",
 			raw:  []map[string]any{{"id": "thought_level", "value": "high"}},
 			want: []SessionConfigValue{{ID: "thought_level", Value: "high"}},
+		},
+		{
+			name: "boolean maps",
+			raw:  []map[string]any{{"id": "fast_mode", "type": "boolean", "value": true}},
+			want: []SessionConfigValue{BooleanSessionConfigValue("fast_mode", true)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -367,6 +387,7 @@ func TestSessionConfigValueParsing(t *testing.T) {
 		[]map[string]any{{"id": 123, "value": "bad-id"}},
 		[]map[string]any{{"id": "model"}},
 		[]map[string]any{{"id": "model", "value": 123}},
+		[]map[string]any{{"id": "fast_mode", "type": "boolean", "value": "true"}},
 	} {
 		if _, err := parseSessionConfigValues(raw); err == nil {
 			t.Fatalf("parseSessionConfigValues(%#v) error = nil, want error", raw)

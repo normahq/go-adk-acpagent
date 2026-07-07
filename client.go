@@ -484,15 +484,13 @@ func (c *Client) applySessionConfig(
 	currentOptions := configOptions
 	for _, value := range normalizeSessionConfigValues(values) {
 		optionID := strings.TrimSpace(value.ID)
-		optionValue := strings.TrimSpace(value.Value)
-		if hasSessionConfigOption(currentOptions, optionID) {
-			resp, err := c.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
-				ValueId: &acp.SetSessionConfigOptionValueId{
-					SessionId: acp.SessionId(sessionID),
-					ConfigId:  acp.SessionConfigId(optionID),
-					Value:     acp.SessionConfigValueId(optionValue),
-				},
-			})
+		option := findSessionConfigOption(currentOptions, optionID)
+		if option != nil {
+			req, err := buildSetSessionConfigOptionRequest(sessionID, optionID, value, *option)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.SetSessionConfigOption(ctx, req)
 			if err != nil {
 				return nil, fmt.Errorf("set acp session config option %q: %w", optionID, err)
 			}
@@ -500,6 +498,10 @@ func (c *Client) applySessionConfig(
 			continue
 		}
 		if optionID == "mode" && modes != nil {
+			optionValue := strings.TrimSpace(value.Value)
+			if optionValue == "" {
+				return nil, fmt.Errorf("acp session mode value is required")
+			}
 			if err := c.SetSessionMode(ctx, sessionID, optionValue); err != nil {
 				if isACPMethodNotFoundError(err) {
 					l.Debug().
@@ -519,31 +521,79 @@ func (c *Client) applySessionConfig(
 }
 
 func hasSessionConfigOption(options []acp.SessionConfigOption, id string) bool {
+	return findSessionConfigOption(options, id) != nil
+}
+
+func findSessionConfigOption(options []acp.SessionConfigOption, id string) *acp.SessionConfigOption {
 	for _, option := range options {
-		if option.Select == nil {
-			continue
+		if option.Select != nil && strings.TrimSpace(string(option.Select.Id)) == strings.TrimSpace(id) {
+			return &option
 		}
-		if strings.TrimSpace(string(option.Select.Id)) == strings.TrimSpace(id) {
-			return true
+		if option.Boolean != nil && strings.TrimSpace(string(option.Boolean.Id)) == strings.TrimSpace(id) {
+			return &option
 		}
 	}
-	return false
+	return nil
+}
+
+func buildSetSessionConfigOptionRequest(
+	sessionID string,
+	optionID string,
+	value SessionConfigValue,
+	option acp.SessionConfigOption,
+) (acp.SetSessionConfigOptionRequest, error) {
+	if option.Boolean != nil {
+		if value.BoolValue == nil {
+			return acp.SetSessionConfigOptionRequest{}, fmt.Errorf("acp session config option %q requires a boolean value", optionID)
+		}
+		return acp.SetSessionConfigOptionRequest{
+			Boolean: &acp.SetSessionConfigOptionBoolean{
+				SessionId: acp.SessionId(sessionID),
+				ConfigId:  acp.SessionConfigId(optionID),
+				Type:      "boolean",
+				Value:     *value.BoolValue,
+			},
+		}, nil
+	}
+	if option.Select != nil {
+		optionValue := strings.TrimSpace(value.Value)
+		if optionValue == "" {
+			return acp.SetSessionConfigOptionRequest{}, fmt.Errorf("acp session config option %q requires a select value", optionID)
+		}
+		return acp.SetSessionConfigOptionRequest{
+			ValueId: &acp.SetSessionConfigOptionValueId{
+				SessionId: acp.SessionId(sessionID),
+				ConfigId:  acp.SessionConfigId(optionID),
+				Value:     acp.SessionConfigValueId(optionValue),
+			},
+		}, nil
+	}
+	return acp.SetSessionConfigOptionRequest{}, fmt.Errorf("acp session config option %q has unsupported type", optionID)
 }
 
 func collectSessionConfigValues(options []acp.SessionConfigOption, modes *acp.SessionModeState) []SessionConfigValue {
 	values := make([]SessionConfigValue, 0, len(options)+1)
 	seen := make(map[string]struct{}, len(options)+1)
 	for _, option := range options {
-		if option.Select == nil {
+		switch {
+		case option.Select != nil:
+			id := strings.TrimSpace(string(option.Select.Id))
+			value := strings.TrimSpace(string(option.Select.CurrentValue))
+			if id == "" || value == "" {
+				continue
+			}
+			values = append(values, SelectSessionConfigValue(id, value))
+			seen[id] = struct{}{}
+		case option.Boolean != nil:
+			id := strings.TrimSpace(string(option.Boolean.Id))
+			if id == "" {
+				continue
+			}
+			values = append(values, BooleanSessionConfigValue(id, option.Boolean.CurrentValue))
+			seen[id] = struct{}{}
+		default:
 			continue
 		}
-		id := strings.TrimSpace(string(option.Select.Id))
-		value := strings.TrimSpace(string(option.Select.CurrentValue))
-		if id == "" || value == "" {
-			continue
-		}
-		values = append(values, SessionConfigValue{ID: id, Value: value})
-		seen[id] = struct{}{}
 	}
 	if modes != nil {
 		mode := strings.TrimSpace(string(modes.CurrentModeId))

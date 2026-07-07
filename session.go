@@ -18,8 +18,20 @@ import (
 type SessionConfigValue struct {
 	// ID is the ACP session config option ID.
 	ID string `json:"id"`
-	// Value is the ACP session config value ID.
+	// Value is the ACP session config value ID for select options.
 	Value string `json:"value"`
+	// BoolValue is the ACP session config value for boolean options.
+	BoolValue *bool `json:"bool_value,omitempty"`
+}
+
+// SelectSessionConfigValue returns an ACP select session config value.
+func SelectSessionConfigValue(id, value string) SessionConfigValue {
+	return SessionConfigValue{ID: id, Value: value}
+}
+
+// BooleanSessionConfigValue returns an ACP boolean session config value.
+func BooleanSessionConfigValue(id string, value bool) SessionConfigValue {
+	return SessionConfigValue{ID: id, BoolValue: &value}
 }
 
 type acpSessionConfig struct {
@@ -267,11 +279,19 @@ func normalizeSessionConfigValues(values []SessionConfigValue) []SessionConfigVa
 	normalized := make([]SessionConfigValue, 0, len(values))
 	for _, value := range values {
 		id := strings.TrimSpace(value.ID)
-		configValue := strings.TrimSpace(value.Value)
-		if id == "" || configValue == "" {
+		if id == "" {
 			continue
 		}
-		normalized = append(normalized, SessionConfigValue{ID: id, Value: configValue})
+		if value.BoolValue != nil {
+			boolValue := *value.BoolValue
+			normalized = append(normalized, BooleanSessionConfigValue(id, boolValue))
+			continue
+		}
+		configValue := strings.TrimSpace(value.Value)
+		if configValue == "" {
+			continue
+		}
+		normalized = append(normalized, SelectSessionConfigValue(id, configValue))
 	}
 	return normalized
 }
@@ -297,14 +317,18 @@ func mergeSessionConfigValues(defaults, overrides []SessionConfigValue) []Sessio
 	return merged
 }
 
-func sessionConfigValuesToState(values []SessionConfigValue) []map[string]string {
+func sessionConfigValuesToState(values []SessionConfigValue) []map[string]any {
 	normalized := normalizeSessionConfigValues(values)
-	stateValues := make([]map[string]string, 0, len(normalized))
+	stateValues := make([]map[string]any, 0, len(normalized))
 	for _, value := range normalized {
-		stateValues = append(stateValues, map[string]string{
-			"id":    value.ID,
-			"value": value.Value,
-		})
+		stateValue := map[string]any{"id": value.ID}
+		if value.BoolValue != nil {
+			stateValue["type"] = "boolean"
+			stateValue["value"] = *value.BoolValue
+		} else {
+			stateValue["value"] = value.Value
+		}
+		stateValues = append(stateValues, stateValue)
 	}
 	return stateValues
 }
@@ -351,11 +375,19 @@ func parseAnySessionConfigValueMaps(values []map[string]any) ([]SessionConfigVal
 		if !ok {
 			return nil, errors.New(`entry missing "value"`)
 		}
+		if configType, _ := value["type"].(string); configType == "boolean" {
+			configValue, ok := rawValue.(bool)
+			if !ok {
+				return nil, fmt.Errorf(`entry "value" must be a boolean; got %T`, rawValue)
+			}
+			parsed = append(parsed, BooleanSessionConfigValue(id, configValue))
+			continue
+		}
 		configValue, ok := rawValue.(string)
 		if !ok {
 			return nil, fmt.Errorf(`entry "value" must be a string; got %T`, rawValue)
 		}
-		parsed = append(parsed, SessionConfigValue{ID: id, Value: configValue})
+		parsed = append(parsed, SelectSessionConfigValue(id, configValue))
 	}
 	return normalizeSessionConfigValues(parsed), nil
 }
