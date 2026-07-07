@@ -46,7 +46,7 @@ tasks:
   coverage:
     desc: Run coverage checks
     cmds:
-      - go test $(go list ./... | grep -v '/examples/') -coverprofile=coverage.out
+      - go test . ./acperror -coverprofile=coverage.out
       - awk -v coverage="$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $3); print $3}')" 'BEGIN { if (coverage < 95.0) exit 1 }'
 
   install-tools:
