@@ -9,6 +9,7 @@ coverage.out
 .cache/
 .gocache/
 .gomodcache/
+.task/
 
 # Editor and IDE state.
 .idea/

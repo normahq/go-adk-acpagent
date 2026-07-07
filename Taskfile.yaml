@@ -1,0 +1,78 @@
+version: "3"
+
+env:
+  GOCACHE: '{{.TASKFILE_DIR}}/.cache/go-build'
+
+tasks:
+  default:
+    desc: Run the full local quality gate
+    deps:
+      - ci
+
+  ci:
+    desc: Run tests, coverage, lint, and security checks
+    deps:
+      - test-race
+      - coverage
+      - lint
+      - security
+
+  test:
+    desc: Run unit tests for both modules
+    cmds:
+      - go test ./...
+      - go -C v2 test ./...
+
+  test-race:
+    desc: Run race tests for both modules
+    cmds:
+      - go test -race ./...
+      - go -C v2 test -race ./...
+
+  coverage:
+    desc: Run coverage checks for both modules
+    cmds:
+      - go test ./... -coverprofile=coverage.out
+      - awk -v coverage="$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $3); print $3}')" 'BEGIN { if (coverage < 95.0) exit 1 }'
+      - go -C v2 test ./... -coverprofile=coverage.out
+      - awk -v coverage="$(go -C v2 tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $3); print $3}')" 'BEGIN { if (coverage < 95.0) exit 1 }'
+
+  install-tools:
+    desc: Install pinned local tools
+    cmds:
+      - GOBIN="$PWD/.bin" go -C tools install github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+      - GOBIN="$PWD/.bin" go -C tools install golang.org/x/vuln/cmd/govulncheck
+    sources:
+      - tools/go.mod
+      - tools/go.sum
+    generates:
+      - .bin/golangci-lint
+      - .bin/govulncheck
+
+  lint:
+    desc: Run golangci-lint for both modules
+    deps:
+      - install-tools
+    cmds:
+      - ./.bin/golangci-lint run ./...
+      - cd v2 && ../.bin/golangci-lint run ./...
+
+  security:
+    desc: Run module verification and govulncheck for both modules
+    deps:
+      - install-tools
+    cmds:
+      - go mod download
+      - go mod verify
+      - go -C v2 mod download
+      - go -C v2 mod verify
+      - ./.bin/govulncheck ./...
+      - cd v2 && ../.bin/govulncheck ./...
+    dir: '{{.TASKFILE_DIR}}'
+
+  tidy:
+    desc: Tidy both modules
+    cmds:
+      - go mod tidy
+      - go -C v2 mod tidy
+      - go -C tools mod tidy

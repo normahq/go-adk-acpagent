@@ -2,6 +2,7 @@
 .cache/
 .gocache/
 .gomodcache/
+.task/
 bin/
 *.test
 coverage.out
