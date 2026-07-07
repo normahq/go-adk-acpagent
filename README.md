@@ -86,8 +86,8 @@ func main() {
 | Pi | `[]string{"npx", "-y", "pi-acp"}` |
 | Generic ACP | Any executable that speaks ACP on stdin/stdout. |
 
-Runnable examples are available for [OpenCode](examples/opencode) and
-[Codex](examples/codex).
+Runnable examples are available for [OpenCode](examples/opencode),
+[Codex](examples/codex), and [Pi](examples/pi).
 
 ## Configuration Cheatsheet
 
