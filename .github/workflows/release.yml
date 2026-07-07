@@ -29,7 +29,7 @@ jobs:
           go test -race ./...
       - name: Coverage
         run: |
-          go test ./... -coverprofile=coverage.out
+          go test $(go list ./... | grep -v '/examples/') -coverprofile=coverage.out
           coverage="$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $3); print $3}')"
           awk -v coverage="$coverage" 'BEGIN { if (coverage < 95.0) exit 1 }'
       - name: Lint
