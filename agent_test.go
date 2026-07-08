@@ -1085,6 +1085,50 @@ func TestAgentAppliesModelConfigOption(t *testing.T) {
 	}
 }
 
+func TestAgentReusesConfiguredSessionWithoutReapplyingUnavailableConfigOptions(t *testing.T) {
+	promptsRaw, err := json.Marshal([]string{"one", "two"})
+	if err != nil {
+		t.Fatalf("json.Marshal(prompts) error = %v", err)
+	}
+	a, err := New(Config{
+		Context: context.Background(),
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_EXPECT_PROMPTS":       string(promptsRaw),
+			"GO_EXPECT_SESSION_MODEL": "openai/gpt-5.4",
+		}),
+		SessionConfig: []SessionConfigValue{{ID: "model", Value: "openai/gpt-5.4"}},
+		WorkingDir:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	sessionService := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{
+		AppName:        "test-app",
+		Agent:          a,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	sess, err := sessionService.Create(context.Background(), &session.CreateRequest{AppName: "test-app", UserID: "test-user"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	first := collectFinalText(t, r.Run(context.Background(), "test-user", sess.Session.ID(), genai.NewContentFromText("one", genai.RoleUser), agent.RunConfig{}))
+	second := collectFinalText(t, r.Run(context.Background(), "test-user", sess.Session.ID(), genai.NewContentFromText("two", genai.RoleUser), agent.RunConfig{}))
+
+	if first != testSessionOneOne {
+		t.Fatalf("first final text = %q, want %q", first, testSessionOneOne)
+	}
+	if second != testSessionOneTwo {
+		t.Fatalf("second final text = %q, want %q", second, testSessionOneTwo)
+	}
+}
+
 func TestAgentBeforeAgentCallbacksShortCircuitACPPrompt(t *testing.T) {
 	a, err := New(Config{
 		Context: context.Background(),

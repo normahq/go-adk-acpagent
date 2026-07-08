@@ -105,19 +105,6 @@ func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 		logger.Debug().
 			Str("acp_session_id", cfg.sessionID).
 			Msg("using acp session id from adk session state")
-		configValues, err := a.client.applySessionConfig(
-			logCtx,
-			cfg.sessionID,
-			cfg.configValues,
-			nil,
-			nil,
-		)
-		if err != nil {
-			return remoteSession{}, err
-		}
-		if len(configValues) > 0 {
-			cfg.configValues = configValues
-		}
 		if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues); err != nil {
 			return remoteSession{}, err
 		}
