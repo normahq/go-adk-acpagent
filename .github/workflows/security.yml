@@ -25,4 +25,4 @@ jobs:
       - name: Install govulncheck
         run: GOBIN="$PWD/.bin" go -C tools install golang.org/x/vuln/cmd/govulncheck
       - name: Run govulncheck
-        run: ./.bin/govulncheck ./... || { sleep 5; ./.bin/govulncheck -show verbose ./...; }
+        run: ./scripts/govulncheck-reachable.sh
