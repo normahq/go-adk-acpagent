@@ -100,7 +100,6 @@ type Agent struct {
 }
 
 type promptRunResult struct {
-	events             []*session.Event
 	promptResult       *PromptResult
 	finalOutput        string
 	latestPlanSnapshot map[string]any
@@ -245,7 +244,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			}
 		}
 
-		result, err := a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun)
+		result, err := a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun, yield)
 		if err != nil && isACPSessionNotFoundError(err) {
 			recovered, recoverErr := a.recoverRemoteSession(ctx, logCtx, logger, err)
 			if recoverErr != nil {
@@ -265,18 +264,12 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 					return
 				}
 			}
-			result, err = a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun)
+			result, err = a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun, yield)
 		}
 		if err != nil {
 			yield(nil, err)
 			return
 		}
-		for _, ev := range result.events {
-			if !yield(ev, nil) {
-				return
-			}
-		}
-
 		ev := session.NewEvent(context.Background(), ctx.InvocationID())
 		if result.promptResult != nil {
 			ev.FinishReason = mapACPStopReasonToFinishReason(result.promptResult.Response.StopReason)
@@ -308,6 +301,7 @@ func (a *Agent) runPromptOnce(
 	logger logger,
 	remoteSessionID string,
 	prompt string,
+	yield func(*session.Event, error) bool,
 ) (promptRunResult, error) {
 	var out promptRunResult
 
@@ -346,7 +340,9 @@ func (a *Agent) runPromptOnce(
 				out.latestPlanSnapshot = planSnapshot
 			}
 			a.logADKEvent(logger, ev, "yielding adk event")
-			out.events = append(out.events, ev)
+			if !yield(ev, nil) {
+				return out, nil
+			}
 		case result, ok := <-resultCh:
 			if !ok {
 				resultCh = nil
