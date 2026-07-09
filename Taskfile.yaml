@@ -75,7 +75,7 @@ tasks:
     cmds:
       - go mod download
       - go mod verify
-      - ./.bin/govulncheck ./...
+      - ./.bin/govulncheck ./... || { sleep 5; ./.bin/govulncheck -show verbose ./...; }
     dir: '{{.TASKFILE_DIR}}'
 
   tidy:

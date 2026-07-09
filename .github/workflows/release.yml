@@ -37,7 +37,7 @@ jobs:
           ./.bin/golangci-lint run ./...
       - name: Security
         run: |
-          ./.bin/govulncheck ./...
+          ./.bin/govulncheck ./... || { sleep 5; ./.bin/govulncheck -show verbose ./...; }
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
