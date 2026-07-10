@@ -12,6 +12,7 @@ type loggerContextKey struct{}
 
 type logger struct {
 	inner *slog.Logger
+	ctx   context.Context
 }
 
 func newLogger(base *slog.Logger, subcomponent string) logger {
@@ -30,11 +31,11 @@ func loggerFromContext(ctx context.Context, fallback logger, subcomponent string
 	}
 	if ctxLogger, ok := ctx.Value(loggerContextKey{}).(logger); ok && ctxLogger.inner != nil {
 		if subcomponent != "" {
-			return logger{inner: ctxLogger.inner.With("subcomponent", subcomponent)}
+			return logger{inner: ctxLogger.inner.With("subcomponent", subcomponent), ctx: ctx}
 		}
-		return ctxLogger
+		return ctxLogger.withContext(ctx)
 	}
-	return fallback
+	return fallback.withContext(ctx)
 }
 
 func contextWithLogger(ctx context.Context, l logger) context.Context {
@@ -52,7 +53,22 @@ func (l logger) slog() *slog.Logger {
 }
 
 func (l logger) with(attrs ...any) logger {
-	return logger{inner: l.slog().With(attrs...)}
+	return logger{inner: l.slog().With(attrs...), ctx: l.ctx}
+}
+
+func (l logger) withContext(ctx context.Context) logger {
+	if ctx != nil {
+		l.ctx = ctx
+	}
+	return l
+}
+
+func (l logger) enabled(level slog.Level) bool {
+	ctx := l.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return l.slog().Enabled(ctx, level)
 }
 
 func (l logger) Debug() *logEvent {
@@ -72,57 +88,78 @@ func (l logger) Warn() *logEvent {
 }
 
 func (l logger) event(level slog.Level) *logEvent {
-	return &logEvent{logger: l.slog(), level: level}
+	return &logEvent{logger: l.slog(), ctx: l.ctx, level: level, enabled: l.enabled(level)}
 }
 
 type logEvent struct {
-	logger *slog.Logger
-	level  slog.Level
-	attrs  []slog.Attr
+	logger  *slog.Logger
+	ctx     context.Context
+	level   slog.Level
+	enabled bool
+	attrs   []slog.Attr
 }
 
 func (e *logEvent) Bool(key string, value bool) *logEvent {
+	if !e.enabled {
+		return e
+	}
 	e.attrs = append(e.attrs, slog.Bool(key, value))
 	return e
 }
 
 func (e *logEvent) Err(err error) *logEvent {
-	if err != nil {
+	if e.enabled && err != nil {
 		e.attrs = append(e.attrs, slog.Any("error", err))
 	}
 	return e
 }
 
 func (e *logEvent) Int(key string, value int) *logEvent {
+	if !e.enabled {
+		return e
+	}
 	e.attrs = append(e.attrs, slog.Int(key, value))
 	return e
 }
 
 func (e *logEvent) Interface(key string, value any) *logEvent {
+	if !e.enabled {
+		return e
+	}
 	e.attrs = append(e.attrs, slog.Any(key, value))
 	return e
 }
 
 func (e *logEvent) RawJSON(key string, value json.RawMessage) *logEvent {
-	if len(value) > 0 {
+	if e.enabled && len(value) > 0 {
 		e.attrs = append(e.attrs, slog.String(key, string(value)))
 	}
 	return e
 }
 
 func (e *logEvent) Str(key string, value string) *logEvent {
+	if !e.enabled {
+		return e
+	}
 	e.attrs = append(e.attrs, slog.String(key, value))
 	return e
 }
 
 func (e *logEvent) Strs(key string, value []string) *logEvent {
+	if !e.enabled {
+		return e
+	}
 	e.attrs = append(e.attrs, slog.Any(key, value))
 	return e
 }
 
 func (e *logEvent) Msg(msg string) {
-	if e.logger == nil {
+	if e.logger == nil || !e.enabled {
 		return
 	}
-	e.logger.LogAttrs(context.Background(), e.level, msg, e.attrs...)
+	ctx := e.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.logger.LogAttrs(ctx, e.level, msg, e.attrs...)
 }

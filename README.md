@@ -56,8 +56,7 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
-	agentRuntime, err := acpagent.New(acpagent.Config{
-		Context:    context.Background(),
+	agentRuntime, err := acpagent.NewWithContext(context.Background(), acpagent.Config{
 		Command:    []string{"opencode", "acp"},
 		WorkingDir: "/workspace",
 		Logger:     logger,
@@ -124,6 +123,11 @@ import "github.com/normahq/go-adk-acpagent/v2/acperror"
 ## Production Notes
 
 - Call `Close` during shutdown so the ACP subprocess exits cleanly.
+- Pass the application lifecycle context to `NewWithContext`. The legacy
+  `Config.Context` field remains available for v2 compatibility.
+- Debug logs contain structural diagnostics only. Trace logs can contain full
+  prompts, ACP metadata, resource URIs, tool data, and protocol payloads; do not
+  enable or retain trace logs where that content is sensitive.
 - Keep ACP protocol messages on stdout and provider logs on stderr.
 - Use `SessionConfig` for session-bound model, mode, thought-level, or
   provider-specific choices. Use `SelectSessionConfigValue` for select options

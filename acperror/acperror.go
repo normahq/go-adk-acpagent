@@ -42,13 +42,19 @@ const (
 // ProviderError is an ACP provider-agnostic classification of a provider-side
 // failure. It intentionally mirrors the ACP wire shape.
 type ProviderError struct {
-	Kind      Kind   `json:"kind"`
-	Message   string `json:"message,omitempty"`
+	// Kind classifies the provider failure.
+	Kind Kind `json:"kind"`
+	// Message contains provider-supplied diagnostic text.
+	Message string `json:"message,omitempty"`
+	// RequestID identifies the failed provider request when available.
 	RequestID string `json:"request_id,omitempty"`
-	Provider  string `json:"provider,omitempty"`
-	Retryable *bool  `json:"retryable,omitempty"`
+	// Provider names the upstream provider when available.
+	Provider string `json:"provider,omitempty"`
+	// Retryable reports whether retrying may succeed. Nil means unspecified.
+	Retryable *bool `json:"retryable,omitempty"`
 }
 
+// Error returns a human-readable provider failure description.
 func (e *ProviderError) Error() string {
 	if e == nil {
 		return "<nil>"

@@ -192,13 +192,7 @@ func isNonEmptyMetaValue(value any) bool {
 	}
 }
 
-func (a *Agent) resolveSingleInstruction(
-	invocationCtx adkagent.InvocationContext,
-	ctx adkagent.ReadonlyContext,
-	templateInstruction string,
-	provider InstructionProvider,
-	kind string,
-) (string, error) {
+func (a *Agent) resolveSingleInstruction(invocationCtx adkagent.InvocationContext, ctx adkagent.ReadonlyContext, templateInstruction string, provider InstructionProvider, kind string) (string, error) {
 	if provider != nil {
 		instruction, err := provider(ctx)
 		if err != nil {
@@ -258,7 +252,7 @@ func replaceTemplateMatch(ctx adkagent.InvocationContext, match string) (string,
 			if optional {
 				return "", nil
 			}
-			return "", fmt.Errorf("failed to load artifact %s: %w", after, err)
+			return "", fmt.Errorf("load artifact %q: %w", after, err)
 		}
 		return resp.Part.Text, nil
 	}

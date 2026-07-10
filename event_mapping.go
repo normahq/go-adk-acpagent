@@ -109,30 +109,30 @@ func contentVisibleText(content *genai.Content) string {
 	return builder.String()
 }
 
-func mapACPUpdateToEvent(logger logger, invocationID string, ext ExtendedSessionNotification) (*session.Event, bool) {
+func mapACPUpdateToEvent(ctx context.Context, logger logger, invocationID string, ext ExtendedSessionNotification) (*session.Event, bool) {
 	update := ext.Update
 	switch {
 	case update.UserMessageChunk != nil:
-		return mapACPUserMessageChunk(logger, invocationID, update.UserMessageChunk)
+		return mapACPUserMessageChunk(ctx, logger, invocationID, update.UserMessageChunk)
 	case update.AgentMessageChunk != nil:
-		return mapACPAgentMessageChunk(logger, invocationID, update.AgentMessageChunk)
+		return mapACPAgentMessageChunk(ctx, logger, invocationID, update.AgentMessageChunk)
 	case update.AgentThoughtChunk != nil:
-		return mapACPAgentThoughtChunk(logger, invocationID, update.AgentThoughtChunk)
+		return mapACPAgentThoughtChunk(ctx, logger, invocationID, update.AgentThoughtChunk)
 	case update.ToolCall != nil:
-		return mapACPToolCall(invocationID, update.ToolCall)
+		return mapACPToolCall(ctx, invocationID, update.ToolCall)
 	case update.ToolCallUpdate != nil:
-		return mapACPToolCallUpdate(invocationID, update.ToolCallUpdate)
+		return mapACPToolCallUpdate(ctx, invocationID, update.ToolCallUpdate)
 	case update.Plan != nil:
-		return mapACPPlanUpdate(logger, invocationID, update.Plan)
+		return mapACPPlanUpdate(ctx, invocationID, update.Plan)
 	case update.AvailableCommandsUpdate != nil:
 		logIgnoredACPUpdate(logger, "available_commands_update", map[string]any{
 			"availableCommands": update.AvailableCommandsUpdate.AvailableCommands,
 		})
 		return nil, false
 	case update.CurrentModeUpdate != nil:
-		return mapACPCurrentModeUpdate(invocationID, string(ext.SessionId), update.CurrentModeUpdate)
+		return mapACPCurrentModeUpdate(ctx, invocationID, string(ext.SessionId), update.CurrentModeUpdate)
 	case update.ConfigOptionUpdate != nil:
-		return mapACPConfigOptionUpdate(invocationID, string(ext.SessionId), update.ConfigOptionUpdate)
+		return mapACPConfigOptionUpdate(ctx, invocationID, string(ext.SessionId), update.ConfigOptionUpdate)
 	case update.SessionInfoUpdate != nil:
 		logIgnoredACPUpdate(logger, "session_info_update", map[string]any{
 			"title":     update.SessionInfoUpdate.Title,
@@ -152,7 +152,7 @@ func mapACPUpdateToEvent(logger logger, invocationID string, ext ExtendedSession
 		if err := json.Unmarshal(ext.Raw, &raw); err == nil {
 			if u, ok := raw["update"].(map[string]any); ok {
 				if disc, ok := u["sessionUpdate"].(string); ok && disc == acpUsageUpdate {
-					return mapACPLegacyUsageUpdate(logger, invocationID, u)
+					return mapACPLegacyUsageUpdate(ctx, logger, invocationID, u)
 				}
 			}
 		}
@@ -162,24 +162,24 @@ func mapACPUpdateToEvent(logger logger, invocationID string, ext ExtendedSession
 	}
 }
 
-func mapACPLegacyUsageUpdate(logger logger, invocationID string, update map[string]any) (*session.Event, bool) {
+func mapACPLegacyUsageUpdate(ctx context.Context, logger logger, invocationID string, update map[string]any) (*session.Event, bool) {
 	usage := mapACPLegacyUsageToUsageMetadata(update)
 	if usage == nil {
 		logger.Debug().Interface("update", update).Msg("ignoring usage_update with no token counts")
 		return nil, false
 	}
-	ev := session.NewEvent(context.Background(), invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.UsageMetadata = usage
 	ev.Partial = true
 	return ev, true
 }
 
-func mapACPAgentMessageChunk(logger logger, invocationID string, chunk *acp.SessionUpdateAgentMessageChunk) (*session.Event, bool) {
+func mapACPAgentMessageChunk(ctx context.Context, logger logger, invocationID string, chunk *acp.SessionUpdateAgentMessageChunk) (*session.Event, bool) {
 	part, ok := mapACPContentBlockToPart(logger, chunk.Content)
 	if !ok {
 		return nil, false
 	}
-	ev := session.NewEvent(context.Background(), invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	ev.Partial = true
 
@@ -212,30 +212,30 @@ func copyACPProviderErrorMetadata(ev *session.Event, meta map[string]any) {
 	ev.CustomMetadata[acperror.ProviderErrorMetadataKey] = providerErr.Metadata()
 }
 
-func mapACPUserMessageChunk(logger logger, invocationID string, chunk *acp.SessionUpdateUserMessageChunk) (*session.Event, bool) {
+func mapACPUserMessageChunk(ctx context.Context, logger logger, invocationID string, chunk *acp.SessionUpdateUserMessageChunk) (*session.Event, bool) {
 	part, ok := mapACPContentBlockToPart(logger, chunk.Content)
 	if !ok {
 		return nil, false
 	}
-	ev := session.NewEvent(context.Background(), invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleUser)
 	ev.Partial = true
 	return ev, true
 }
 
-func mapACPAgentThoughtChunk(logger logger, invocationID string, chunk *acp.SessionUpdateAgentThoughtChunk) (*session.Event, bool) {
+func mapACPAgentThoughtChunk(ctx context.Context, logger logger, invocationID string, chunk *acp.SessionUpdateAgentThoughtChunk) (*session.Event, bool) {
 	part, ok := mapACPContentBlockToPart(logger, chunk.Content)
 	if !ok {
 		return nil, false
 	}
 	part.Thought = true
-	ev := session.NewEvent(context.Background(), invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	ev.Partial = true
 	return ev, true
 }
 
-func mapACPToolCall(invocationID string, tool *acp.SessionUpdateToolCall) (*session.Event, bool) {
+func mapACPToolCall(ctx context.Context, invocationID string, tool *acp.SessionUpdateToolCall) (*session.Event, bool) {
 	args := map[string]any{
 		"kind":      tool.Kind,
 		"status":    tool.Status,
@@ -251,7 +251,7 @@ func mapACPToolCall(invocationID string, tool *acp.SessionUpdateToolCall) (*sess
 			Args: args,
 		},
 	}
-	ev := session.NewEvent(context.Background(), invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	if isACPToolStatusLongRunning(tool.Status) {
 		ev.LongRunningToolIDs = []string{string(tool.ToolCallId)}
@@ -259,7 +259,7 @@ func mapACPToolCall(invocationID string, tool *acp.SessionUpdateToolCall) (*sess
 	return ev, true
 }
 
-func mapACPToolCallUpdate(invocationID string, tool *acp.SessionToolCallUpdate) (*session.Event, bool) {
+func mapACPToolCallUpdate(ctx context.Context, invocationID string, tool *acp.SessionToolCallUpdate) (*session.Event, bool) {
 	response := map[string]any{
 		"status":    tool.Status,
 		"title":     tool.Title,
@@ -275,7 +275,7 @@ func mapACPToolCallUpdate(invocationID string, tool *acp.SessionToolCallUpdate) 
 			Response: response,
 		},
 	}
-	ev := session.NewEvent(context.Background(), invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Content = genai.NewContentFromParts([]*genai.Part{part}, genai.RoleModel)
 	if tool.Status != nil && isACPToolStatusLongRunning(*tool.Status) {
 		ev.LongRunningToolIDs = []string{string(tool.ToolCallId)}
@@ -283,7 +283,7 @@ func mapACPToolCallUpdate(invocationID string, tool *acp.SessionToolCallUpdate) 
 	return ev, true
 }
 
-func mapACPPlanUpdate(_ logger, invocationID string, plan *acp.SessionUpdatePlan) (*session.Event, bool) {
+func mapACPPlanUpdate(ctx context.Context, invocationID string, plan *acp.SessionUpdatePlan) (*session.Event, bool) {
 	if plan == nil || len(plan.Entries) == 0 {
 		return nil, false
 	}
@@ -295,7 +295,7 @@ func mapACPPlanUpdate(_ logger, invocationID string, plan *acp.SessionUpdatePlan
 			"priority": entry.Priority,
 		})
 	}
-	ev := session.NewEvent(context.Background(), invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Actions.StateDelta[PlanStateKey] = map[string]any{
 		acpPlanEntriesKey: entries,
 	}
@@ -303,7 +303,7 @@ func mapACPPlanUpdate(_ logger, invocationID string, plan *acp.SessionUpdatePlan
 	return ev, true
 }
 
-func mapACPConfigOptionUpdate(invocationID, sessionID string, update *acp.SessionConfigOptionUpdate) (*session.Event, bool) {
+func mapACPConfigOptionUpdate(ctx context.Context, invocationID, sessionID string, update *acp.SessionConfigOptionUpdate) (*session.Event, bool) {
 	if update == nil || strings.TrimSpace(sessionID) == "" {
 		return nil, false
 	}
@@ -311,13 +311,13 @@ func mapACPConfigOptionUpdate(invocationID, sessionID string, update *acp.Sessio
 	if len(values) == 0 {
 		return nil, false
 	}
-	ev := session.NewEvent(context.Background(), invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues(sessionID, "", values)
 	ev.Partial = true
 	return ev, true
 }
 
-func mapACPCurrentModeUpdate(invocationID, sessionID string, update *acp.SessionCurrentModeUpdate) (*session.Event, bool) {
+func mapACPCurrentModeUpdate(ctx context.Context, invocationID, sessionID string, update *acp.SessionCurrentModeUpdate) (*session.Event, bool) {
 	if update == nil || strings.TrimSpace(sessionID) == "" {
 		return nil, false
 	}
@@ -325,7 +325,7 @@ func mapACPCurrentModeUpdate(invocationID, sessionID string, update *acp.Session
 	if mode == "" {
 		return nil, false
 	}
-	ev := session.NewEvent(context.Background(), invocationID)
+	ev := session.NewEvent(ctx, invocationID)
 	ev.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues(sessionID, "", []SessionConfigValue{{ID: "mode", Value: mode}})
 	ev.Partial = true
 	return ev, true
@@ -438,25 +438,35 @@ func isACPToolStatusLongRunning(status acp.ToolCallStatus) bool {
 
 func logUnsupportedACPUpdate(logger logger, ext ExtendedSessionNotification) {
 	updateType := extendedSessionUpdateType(ext)
-	logEvent := logger.Debug().
-		Str("acp_update_type", updateType)
+	logger.Debug().
+		Str("acp_update_type", updateType).
+		Msg("ignoring unsupported acp session update")
+	if !logger.enabled(levelTrace) {
+		return
+	}
 
+	logEvent := logger.Trace().Str("acp_update_type", updateType)
 	if updateType == unknownValue {
 		logEvent = logEvent.RawJSON("acp_update_payload", ext.Raw)
 	} else if payload, ok := marshalACPUpdatePayload(logger, "session_update_"+updateType, ext.Update); ok {
 		logEvent = logEvent.Str("acp_update_payload", payload)
 	}
-	logEvent.Msg("ignoring unsupported acp session update")
+	logEvent.Msg("ignored unsupported acp session update payload")
 }
 
 func logIgnoredACPUpdate(logger logger, updateType string, payload any) {
-	logEvent := logger.Debug().
-		Str("acp_update_type", updateType)
+	logger.Debug().
+		Str("acp_update_type", updateType).
+		Msg("ignoring non-user-visible acp session update")
+	if !logger.enabled(levelTrace) {
+		return
+	}
 
+	logEvent := logger.Trace().Str("acp_update_type", updateType)
 	if marshaled, ok := marshalACPUpdatePayload(logger, "session_update_"+updateType, payload); ok {
 		logEvent = logEvent.Str("acp_update_payload", marshaled)
 	}
-	logEvent.Msg("ignoring non-user-visible acp session update")
+	logEvent.Msg("ignored non-user-visible acp session update payload")
 }
 
 func extendedSessionUpdateType(ext ExtendedSessionNotification) string {
@@ -477,16 +487,20 @@ func extendedSessionUpdateType(ext ExtendedSessionNotification) string {
 
 func logIgnoredACPContentBlock(logger logger, block acp.ContentBlock) {
 	blockType := contentBlockType(block)
-	logEvent := logger.Debug().
-		Str("acp_content_block_type", blockType).
-		Str("acp_content_block_text", acpContentBlockLogText(block)).
-		Interface("acp_content_block", acpContentBlockLogValue(block))
-
+	logEvent := logger.Debug().Str("acp_content_block_type", blockType)
 	if blockType == unknownValue {
 		logEvent.Msg("ignoring unsupported acp content block")
+	} else {
+		logEvent.Msg("ignoring non-text acp content block")
+	}
+	if !logger.enabled(levelTrace) {
 		return
 	}
-	logEvent.Msg("ignoring non-text acp content block")
+	logger.Trace().
+		Str("acp_content_block_type", blockType).
+		Str("acp_content_block_text", acpContentBlockLogText(block)).
+		Interface("acp_content_block", acpContentBlockLogValue(block)).
+		Msg("ignored acp content block payload")
 }
 
 func acpContentBlockLogText(block acp.ContentBlock) string {

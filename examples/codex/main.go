@@ -15,8 +15,7 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
-	agentRuntime, err := acpagent.New(acpagent.Config{
-		Context:    context.Background(),
+	agentRuntime, err := acpagent.NewWithContext(context.Background(), acpagent.Config{
 		Command:    []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
 		WorkingDir: "/workspace",
 		Logger:     logger,

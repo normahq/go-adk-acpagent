@@ -18,6 +18,8 @@ import (
 // Config configures an ACP-backed ADK agent.
 type Config struct {
 	// Context is the base context for the agent's lifecycle.
+	//
+	// Deprecated: Use NewWithContext to pass the lifecycle context explicitly.
 	Context context.Context
 	// Name is the display name of the agent. Defaults to "ACPAgent".
 	Name string
@@ -68,6 +70,8 @@ type Config struct {
 	// PermissionHandler decides how to respond to ACP permission requests.
 	PermissionHandler PermissionHandler
 	// Logger is the slog logger to use for this agent.
+	// Trace-level records can contain complete ACP payloads and other sensitive
+	// content.
 	Logger *slog.Logger
 	// MCPServers is the map of MCP server configurations.
 	MCPServers map[string]MCPServerConfig
@@ -145,6 +149,22 @@ func New(cfg Config) (*Agent, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	return newAgent(ctx, cfg)
+}
+
+// NewWithContext creates an ADK agent backed by an ACP client process using ctx
+// for the agent and subprocess lifecycle.
+//
+// The caller must pass a non-nil context and call [Agent.Close] to shut down the
+// subprocess. Config.Context is ignored.
+func NewWithContext(ctx context.Context, cfg Config) (*Agent, error) {
+	if ctx == nil {
+		return nil, errors.New("context is required")
+	}
+	return newAgent(ctx, cfg)
+}
+
+func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 	if strings.TrimSpace(cfg.Name) == "" {
 		cfg.Name = defaultAgentName
 	}
@@ -152,7 +172,7 @@ func New(cfg Config) (*Agent, error) {
 		cfg.Description = defaultAgentDescription
 	}
 
-	l := newLogger(cfg.Logger, "acpagent.agent")
+	l := newLogger(cfg.Logger, "acpagent.agent").withContext(ctx)
 
 	client, err := NewClient(ctx, ClientConfig{
 		Command:           cfg.Command,
@@ -235,7 +255,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		if remote.fresh {
 			promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 		}
-		stateEvent := session.NewEvent(context.Background(), ctx.InvocationID())
+		stateEvent := session.NewEvent(ctx, ctx.InvocationID())
 		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
 		if len(stateEvent.Actions.StateDelta) > 0 {
 			a.logADKEvent(logger, stateEvent, "yielding acp session state event")
@@ -256,7 +276,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			if remote.fresh {
 				promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
 			}
-			stateEvent := session.NewEvent(context.Background(), ctx.InvocationID())
+			stateEvent := session.NewEvent(ctx, ctx.InvocationID())
 			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
 			if len(stateEvent.Actions.StateDelta) > 0 {
 				a.logADKEvent(logger, stateEvent, "yielding recovered acp session state event")
@@ -270,7 +290,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			yield(nil, err)
 			return
 		}
-		ev := session.NewEvent(context.Background(), ctx.InvocationID())
+		ev := session.NewEvent(ctx, ctx.InvocationID())
 		if result.promptResult != nil {
 			ev.FinishReason = mapACPStopReasonToFinishReason(result.promptResult.Response.StopReason)
 			ev.UsageMetadata = mapACPUsageToUsageMetadata(result.promptResult.Usage)
@@ -295,21 +315,19 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 	}
 }
 
-func (a *Agent) runPromptOnce(
-	ctx adkagent.InvocationContext,
-	logCtx context.Context,
-	logger logger,
-	remoteSessionID string,
-	prompt string,
-	yield func(*session.Event, error) bool,
-) (promptRunResult, error) {
+func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, remoteSessionID, prompt string, yield func(*session.Event, error) bool) (promptRunResult, error) {
 	var out promptRunResult
 
 	logger.Debug().
 		Str("acp_session_id", remoteSessionID).
-		Str("prompt", prompt).
 		Int("prompt_len", len(prompt)).
 		Msg("starting adk invocation")
+	if logger.enabled(levelTrace) {
+		logger.Trace().
+			Str("acp_session_id", remoteSessionID).
+			Str("prompt", prompt).
+			Msg("starting adk invocation payload")
+	}
 
 	updates, resultCh, err := a.client.Prompt(logCtx, remoteSessionID, prompt)
 	if err != nil {
@@ -329,7 +347,7 @@ func (a *Agent) runPromptOnce(
 			if terminalErr, ok := terminalPromptErrorFromNotification(ext); ok {
 				out.terminalError = terminalErr
 			}
-			ev, ok := mapACPUpdateToEvent(logger, ctx.InvocationID(), ext)
+			ev, ok := mapACPUpdateToEvent(ctx, logger, ctx.InvocationID(), ext)
 			if !ok {
 				continue
 			}
@@ -378,7 +396,7 @@ func (a *Agent) sessionLogger(ctx context.Context, base logger, adkSessionID str
 }
 
 func (a *Agent) logADKEvent(logger logger, ev *session.Event, msg string) {
-	if ev == nil {
+	if ev == nil || !logger.enabled(levelTrace) {
 		return
 	}
 	logEvent := logger.Trace().

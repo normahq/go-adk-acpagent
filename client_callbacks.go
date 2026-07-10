@@ -22,7 +22,6 @@ func (c *Client) RequestPermission(ctx context.Context, params acp.RequestPermis
 	if c.permissionHandler != nil {
 		resp, err := c.permissionHandler(ctx, params)
 		if err != nil {
-			l.Error().Err(err).Str("acp_session_id", string(params.SessionId)).Msg("permission handler failed")
 			return acp.RequestPermissionResponse{}, err
 		}
 		l.Debug().
@@ -52,6 +51,9 @@ func (c *Client) RequestPermission(ctx context.Context, params acp.RequestPermis
 // SessionUpdate is part of the ACP client callback contract.
 func (c *Client) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
 	l := c.loggerForContext(ctx)
+	if !l.enabled(levelTrace) {
+		return nil
+	}
 	logEvent := l.Trace().
 		Str("acp_session_id", string(params.SessionId)).
 		Str("update_kind", sessionUpdateKind(params.Update))

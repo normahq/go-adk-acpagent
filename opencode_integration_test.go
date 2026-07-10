@@ -52,7 +52,7 @@ func TestOpenCodeACPIntegration_NewSessionWithMCPServers(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), opencodeIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), opencodeIntegrationTimeout)
 	defer cancel()
 
 	if _, err := client.NewSession(ctx, workingDir, mcpServers); err != nil {
@@ -67,8 +67,7 @@ func TestOpenCodeACPIntegration_AgentWithMCPServers(t *testing.T) {
 	mcpCommand := opencodeMCPHelperCommand(t)
 
 	var stderr bytes.Buffer
-	agentWithMCP, err := New(Config{
-		Context:    context.Background(),
+	agentWithMCP, err := NewWithContext(t.Context(), Config{
 		Command:    []string{"opencode", "acp"},
 		WorkingDir: workingDir,
 		Stderr:     &stderr,
@@ -83,9 +82,7 @@ func TestOpenCodeACPIntegration_AgentWithMCPServers(t *testing.T) {
 		maybeSkipOpenCodeIntegration(t, err, stderr.String())
 		failWithDetails(t, "acpagent.New failed", err, stderr.String())
 	}
-	t.Cleanup(func() {
-		_ = agentWithMCP.Close()
-	})
+	defer closeTestCloser(t, agentWithMCP)
 
 	sessionService := session.InMemoryService()
 	r, err := runnerpkg.New(runnerpkg.Config{
@@ -97,7 +94,7 @@ func TestOpenCodeACPIntegration_AgentWithMCPServers(t *testing.T) {
 		t.Fatalf("runner.New() error = %v", err)
 	}
 
-	sess, err := sessionService.Create(context.Background(), &session.CreateRequest{
+	sess, err := sessionService.Create(t.Context(), &session.CreateRequest{
 		AppName: "opencode-acp-mcp-integration",
 		UserID:  "integration-user",
 	})
@@ -105,7 +102,7 @@ func TestOpenCodeACPIntegration_AgentWithMCPServers(t *testing.T) {
 		t.Fatalf("session.Create() error = %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), opencodeIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), opencodeIntegrationTimeout)
 	defer cancel()
 
 	events := 0
@@ -128,7 +125,7 @@ func TestOpenCodeACPIntegration_PromptRoundTrip(t *testing.T) {
 	_ = mustInitializeACP(t, client, stderr)
 	sess := mustNewACPSession(t, client, stderr, workingDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), opencodeIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), opencodeIntegrationTimeout)
 	defer cancel()
 
 	updates, resultCh, err := client.Prompt(ctx, string(sess.SessionId), "Reply with one short word.")
@@ -156,7 +153,7 @@ func TestOpenCodeACPIntegration_InvalidArgFailsInitialize(t *testing.T) {
 	workingDir := requireOpenCodeEnvironment(t)
 	client, stderr := newOpenCodeACPClient(t, workingDir, "--definitely-invalid-flag", "acp")
 
-	ctx, cancel := context.WithTimeout(context.Background(), opencodeIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), opencodeIntegrationTimeout)
 	defer cancel()
 	if _, err := client.Initialize(ctx); err == nil {
 		failWithDetails(t, "initialize unexpectedly succeeded with invalid opencode arg", nil, stderr.String())
@@ -170,7 +167,7 @@ func requireOpenCodeEnvironment(t *testing.T) string {
 		t.Fatalf("opencode binary not found in PATH: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	helpCmd := exec.CommandContext(ctx, "opencode", "acp", "--help")
 	var helpOut bytes.Buffer
@@ -212,7 +209,7 @@ func newOpenCodeACPClient(t *testing.T, workingDir string, commandArgs ...string
 
 	command := append([]string{"opencode"}, commandArgs...)
 	var stderr bytes.Buffer
-	client, err := NewClient(context.Background(), ClientConfig{
+	client, err := NewClient(t.Context(), ClientConfig{
 		Command:    command,
 		WorkingDir: workingDir,
 		Stderr:     &stderr,
@@ -220,9 +217,7 @@ func newOpenCodeACPClient(t *testing.T, workingDir string, commandArgs ...string
 	if err != nil {
 		failWithDetails(t, "start ACP client failed", err, stderr.String())
 	}
-	t.Cleanup(func() {
-		_ = client.Close()
-	})
+	defer closeTestCloser(t, client)
 	return client, &stderr
 }
 
@@ -247,7 +242,7 @@ func configureOpenCodeWritableEnv(t *testing.T) {
 func mustInitializeACP(t *testing.T, client *Client, stderr *bytes.Buffer) acp.InitializeResponse {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), opencodeIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), opencodeIntegrationTimeout)
 	defer cancel()
 
 	resp, err := client.Initialize(ctx)
@@ -261,7 +256,7 @@ func mustInitializeACP(t *testing.T, client *Client, stderr *bytes.Buffer) acp.I
 func mustNewACPSession(t *testing.T, client *Client, stderr *bytes.Buffer, cwd string) acp.NewSessionResponse {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), opencodeIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), opencodeIntegrationTimeout)
 	defer cancel()
 
 	resp, err := client.NewSession(ctx, cwd, nil)
@@ -346,7 +341,7 @@ func TestOpenCodeMCPHelperProcess(t *testing.T) {
 		}, openCodeMCPPingOutput{Message: reply}, nil
 	})
 
-	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+	if err := server.Run(t.Context(), &mcp.StdioTransport{}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "opencode mcp helper failed: %v\n", err)
 		os.Exit(1)
 	}

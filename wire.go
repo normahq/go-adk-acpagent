@@ -3,7 +3,6 @@ package acpagent
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -24,9 +23,6 @@ func (w *wireLoggingWriter) Write(p []byte) (int, error) {
 	n, err := w.writer.Write(p)
 	if n > 0 {
 		w.buffer.append(p[:n])
-	}
-	if err != nil {
-		w.buffer.logger.Warn().Err(err).Msg("failed to write acp stream")
 	}
 	return n, err
 }
@@ -68,9 +64,6 @@ func (r *wireLoggingReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 	if n > 0 {
 		r.buffer.append(p[:n])
-	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		r.buffer.logger.Warn().Err(err).Msg("failed to read acp stream")
 	}
 	return n, err
 }
@@ -162,6 +155,9 @@ func (b *wireLogBuffer) logLine(line []byte) {
 		kind = "response"
 	}
 
+	if !b.logger.enabled(levelTrace) {
+		return
+	}
 	evt := b.logger.Trace().
 		Str("direction", b.direction).
 		Str("rpc_kind", kind)

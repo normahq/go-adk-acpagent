@@ -10,7 +10,7 @@ agent. Add `SessionConfig`, `ReasoningEffort`, `MCPServers`, `Logger`, and
 ## OpenCode
 
 ```go
-agentRuntime, err := acpagent.New(acpagent.Config{
+agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 	Command:    []string{"opencode", "acp"},
 	WorkingDir: "/workspace",
 	Stderr:     os.Stderr,
@@ -25,7 +25,7 @@ OpenCode ACP agent.
 ## Codex
 
 ```go
-agentRuntime, err := acpagent.New(acpagent.Config{
+agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 	Command:    []string{"npx", "-y", "@normahq/codex-acp-bridge@latest"},
 	WorkingDir: "/workspace",
 	Stderr:     os.Stderr,
@@ -40,7 +40,7 @@ metadata. The adapter sends reasoning effort through
 ## Claude Code
 
 ```go
-agentRuntime, err := acpagent.New(acpagent.Config{
+agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 	Command:    []string{"npx", "-y", "@zed-industries/claude-code-acp@latest"},
 	WorkingDir: "/workspace",
 	Stderr:     os.Stderr,
@@ -54,7 +54,7 @@ version pinned in production if reproducibility matters.
 ## Pi
 
 ```go
-agentRuntime, err := acpagent.New(acpagent.Config{
+agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 	Command:    []string{"npx", "-y", "pi-acp"},
 	WorkingDir: "/workspace",
 	Stderr:     os.Stderr,
@@ -78,7 +78,7 @@ config option with values `off`, `minimal`, `low`, `medium`, `high`, or
 Use this for any local executable or script that implements ACP over stdio.
 
 ```go
-agentRuntime, err := acpagent.New(acpagent.Config{
+agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 	Command:    []string{"/usr/local/bin/my-acp-agent", "--stdio"},
 	WorkingDir: "/workspace",
 	Stderr:     os.Stderr,
@@ -95,7 +95,7 @@ ACP agents that accept MCP server definitions can receive them through
 `Config.MCPServers`:
 
 ```go
-agentRuntime, err := acpagent.New(acpagent.Config{
+agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 	Command:    []string{"opencode", "acp"},
 	WorkingDir: "/workspace",
 	MCPServers: map[string]acpagent.MCPServerConfig{

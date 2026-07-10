@@ -6,12 +6,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/adk/v2/session"
 )
 
@@ -69,7 +69,7 @@ func TestClientCapabilityAccessors(t *testing.T) {
 func TestClientAuthenticateIgnoresEmptyMethod(t *testing.T) {
 	t.Parallel()
 
-	if err := (&Client{}).Authenticate(context.Background(), " \t "); err != nil {
+	if err := (&Client{}).Authenticate(t.Context(), " \t "); err != nil {
 		t.Fatalf("Authenticate(empty) error = %v, want nil", err)
 	}
 }
@@ -78,13 +78,13 @@ func TestClientSessionRestoreRejectsEmptySessionID(t *testing.T) {
 	t.Parallel()
 
 	client := &Client{logger: newLogger(nil, "")}
-	if _, err := client.ResumeSession(context.Background(), " \t ", "/tmp", nil); !errors.Is(err, errSessionIDRequired) {
+	if _, err := client.ResumeSession(t.Context(), " \t ", "/tmp", nil); !errors.Is(err, errSessionIDRequired) {
 		t.Fatalf("ResumeSession(empty) error = %v, want errSessionIDRequired", err)
 	}
-	if _, err := client.LoadSession(context.Background(), "", "/tmp", nil); !errors.Is(err, errSessionIDRequired) {
+	if _, err := client.LoadSession(t.Context(), "", "/tmp", nil); !errors.Is(err, errSessionIDRequired) {
 		t.Fatalf("LoadSession(empty) error = %v, want errSessionIDRequired", err)
 	}
-	if _, err := client.LoadSessionWithMeta(context.Background(), "\n", "/tmp", nil, map[string]any{"x": 1}); !errors.Is(err, errSessionIDRequired) {
+	if _, err := client.LoadSessionWithMeta(t.Context(), "\n", "/tmp", nil, map[string]any{"x": 1}); !errors.Is(err, errSessionIDRequired) {
 		t.Fatalf("LoadSessionWithMeta(empty) error = %v, want errSessionIDRequired", err)
 	}
 }
@@ -93,10 +93,10 @@ func TestClientPromptWithContentValidation(t *testing.T) {
 	t.Parallel()
 
 	client := &Client{logger: newLogger(nil, "")}
-	if _, _, err := client.PromptWithContent(context.Background(), "session-1", nil); !errors.Is(err, errPromptContentReq) {
+	if _, _, err := client.PromptWithContent(t.Context(), "session-1", nil); !errors.Is(err, errPromptContentReq) {
 		t.Fatalf("PromptWithContent(empty prompt) error = %v, want errPromptContentReq", err)
 	}
-	if _, _, err := client.PromptWithContent(context.Background(), " ", []acp.ContentBlock{acp.TextBlock("hi")}); !errors.Is(err, errSessionIDRequired) {
+	if _, _, err := client.PromptWithContent(t.Context(), " ", []acp.ContentBlock{acp.TextBlock("hi")}); !errors.Is(err, errSessionIDRequired) {
 		t.Fatalf("PromptWithContent(empty session) error = %v, want errSessionIDRequired", err)
 	}
 }
@@ -135,31 +135,31 @@ func TestClientUnsupportedCallbacksReturnMethodNotFound(t *testing.T) {
 		call func() error
 	}{
 		{name: "read text file", call: func() error {
-			_, err := client.ReadTextFile(context.Background(), acp.ReadTextFileRequest{})
+			_, err := client.ReadTextFile(t.Context(), acp.ReadTextFileRequest{})
 			return err
 		}},
 		{name: "write text file", call: func() error {
-			_, err := client.WriteTextFile(context.Background(), acp.WriteTextFileRequest{})
+			_, err := client.WriteTextFile(t.Context(), acp.WriteTextFileRequest{})
 			return err
 		}},
 		{name: "create terminal", call: func() error {
-			_, err := client.CreateTerminal(context.Background(), acp.CreateTerminalRequest{})
+			_, err := client.CreateTerminal(t.Context(), acp.CreateTerminalRequest{})
 			return err
 		}},
 		{name: "kill terminal", call: func() error {
-			_, err := client.KillTerminal(context.Background(), acp.KillTerminalRequest{})
+			_, err := client.KillTerminal(t.Context(), acp.KillTerminalRequest{})
 			return err
 		}},
 		{name: "terminal output", call: func() error {
-			_, err := client.TerminalOutput(context.Background(), acp.TerminalOutputRequest{})
+			_, err := client.TerminalOutput(t.Context(), acp.TerminalOutputRequest{})
 			return err
 		}},
 		{name: "release terminal", call: func() error {
-			_, err := client.ReleaseTerminal(context.Background(), acp.ReleaseTerminalRequest{})
+			_, err := client.ReleaseTerminal(t.Context(), acp.ReleaseTerminalRequest{})
 			return err
 		}},
 		{name: "wait for terminal exit", call: func() error {
-			_, err := client.WaitForTerminalExit(context.Background(), acp.WaitForTerminalExitRequest{})
+			_, err := client.WaitForTerminalExit(t.Context(), acp.WaitForTerminalExitRequest{})
 			return err
 		}},
 	}
@@ -177,7 +177,7 @@ func TestRequestPermissionFallbacks(t *testing.T) {
 	t.Parallel()
 
 	title := "Run shell"
-	rejectResp, err := (&Client{logger: newLogger(nil, "")}).RequestPermission(context.Background(), acp.RequestPermissionRequest{
+	rejectResp, err := (&Client{logger: newLogger(nil, "")}).RequestPermission(t.Context(), acp.RequestPermissionRequest{
 		SessionId: "session-1",
 		ToolCall:  acp.ToolCallUpdate{Title: &title},
 		Options: []acp.PermissionOption{
@@ -192,7 +192,7 @@ func TestRequestPermissionFallbacks(t *testing.T) {
 		t.Fatalf("RequestPermission(reject option) outcome = %#v", rejectResp.Outcome)
 	}
 
-	cancelResp, err := (&Client{logger: newLogger(nil, "")}).RequestPermission(context.Background(), acp.RequestPermissionRequest{
+	cancelResp, err := (&Client{logger: newLogger(nil, "")}).RequestPermission(t.Context(), acp.RequestPermissionRequest{
 		SessionId: "session-1",
 		Options:   []acp.PermissionOption{{OptionId: "allow", Kind: acp.PermissionOptionKindAllowOnce}},
 	})
@@ -213,7 +213,7 @@ func TestRequestPermissionFallbacks(t *testing.T) {
 		permissionHandler: func(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 			return acp.RequestPermissionResponse{}, wantErr
 		},
-	}).RequestPermission(context.Background(), acp.RequestPermissionRequest{SessionId: "session-1"})
+	}).RequestPermission(t.Context(), acp.RequestPermissionRequest{SessionId: "session-1"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("RequestPermission(handler error) error = %v, want %v", err, wantErr)
 	}
@@ -222,11 +222,11 @@ func TestRequestPermissionFallbacks(t *testing.T) {
 func TestClientConstructorValidationFailures(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewClient(context.Background(), ClientConfig{}); err == nil || !strings.Contains(err.Error(), "acp command is required") {
+	if _, err := NewClient(t.Context(), ClientConfig{}); err == nil || !strings.Contains(err.Error(), "acp command is required") {
 		t.Fatalf("NewClient(empty command) error = %v, want command required", err)
 	}
 
-	if _, err := NewClient(context.Background(), ClientConfig{Command: []string{"/definitely/missing/acp-agent"}}); err == nil || !strings.Contains(err.Error(), "start acp process") {
+	if _, err := NewClient(t.Context(), ClientConfig{Command: []string{"/definitely/missing/acp-agent"}}); err == nil || !strings.Contains(err.Error(), "start acp process") {
 		t.Fatalf("NewClient(missing executable) error = %v, want start error", err)
 	}
 }
@@ -234,8 +234,7 @@ func TestClientConstructorValidationFailures(t *testing.T) {
 func TestAgentConstructorClosesClientAfterMCPConversionFailure(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(Config{
-		Context:    context.Background(),
+	_, err := NewWithContext(t.Context(), Config{
 		Command:    helperCommand(t),
 		WorkingDir: t.TempDir(),
 		MCPServers: map[string]MCPServerConfig{
@@ -251,10 +250,10 @@ func TestClientSetSessionModeValidation(t *testing.T) {
 	t.Parallel()
 
 	client := &Client{logger: newLogger(nil, "")}
-	if err := client.SetSessionMode(context.Background(), "", "mode"); !errors.Is(err, errSessionIDRequired) {
+	if err := client.SetSessionMode(t.Context(), "", "mode"); !errors.Is(err, errSessionIDRequired) {
 		t.Fatalf("SetSessionMode(empty session) error = %v, want errSessionIDRequired", err)
 	}
-	if err := client.SetSessionMode(context.Background(), "session-1", " "); !errors.Is(err, errModeRequired) {
+	if err := client.SetSessionMode(t.Context(), "session-1", " "); !errors.Is(err, errModeRequired) {
 		t.Fatalf("SetSessionMode(empty mode) error = %v, want errModeRequired", err)
 	}
 }
@@ -306,8 +305,8 @@ func TestSessionConfigOptionHelpers(t *testing.T) {
 		{ID: "mode", Value: "code"},
 		BooleanSessionConfigValue("fast_mode", true),
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("collectSessionConfigValues() = %#v, want %#v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("collectSessionConfigValues() mismatch (-want +got):\n%s", diff)
 	}
 
 	withLegacyMode := collectSessionConfigValues([]acp.SessionConfigOption{{
@@ -318,8 +317,8 @@ func TestSessionConfigOptionHelpers(t *testing.T) {
 		},
 	}}, &acp.SessionModeState{CurrentModeId: "plan"})
 	wantWithLegacyMode := []SessionConfigValue{{ID: "model", Value: "gpt-5-codex"}, {ID: "mode", Value: "plan"}}
-	if !reflect.DeepEqual(withLegacyMode, wantWithLegacyMode) {
-		t.Fatalf("collectSessionConfigValues(legacy mode) = %#v, want %#v", withLegacyMode, wantWithLegacyMode)
+	if diff := cmp.Diff(wantWithLegacyMode, withLegacyMode); diff != "" {
+		t.Errorf("collectSessionConfigValues(legacy mode) mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -358,8 +357,8 @@ func TestSessionConfigValueParsing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseSessionConfigValues() error = %v", err)
 			}
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("parseSessionConfigValues() = %#v, want %#v", got, tc.want)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("parseSessionConfigValues() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -372,8 +371,8 @@ func TestSessionConfigValueParsing(t *testing.T) {
 		t.Fatalf("parseSessionConfigValues() error = %v", err)
 	}
 	want := []SessionConfigValue{{ID: "model", Value: "gpt-5-codex"}, {ID: "mode", Value: "code"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("parseSessionConfigValues() = %#v, want %#v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("parseSessionConfigValues() mismatch (-want +got):\n%s", diff)
 	}
 
 	if _, err := parseSessionConfigValues([]any{"bad"}); err == nil {
@@ -407,8 +406,8 @@ func TestMergeSessionConfigValues(t *testing.T) {
 		{ID: "mode", Value: "code"},
 		{ID: "thought_level", Value: "high"},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("mergeSessionConfigValues() = %#v, want %#v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("mergeSessionConfigValues() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -590,11 +589,11 @@ func TestClientQueueAndMarshalHelpers(t *testing.T) {
 func TestClientLoggingAndCloseHelpers(t *testing.T) {
 	t.Parallel()
 
-	if !suppressLastChunkLogFromContext(context.WithValue(context.Background(), suppressLastChunkLogContextKey, true)) {
+	if !suppressLastChunkLogFromContext(context.WithValue(t.Context(), suppressLastChunkLogContextKey, true)) {
 		t.Fatal("suppressLastChunkLogFromContext(true) = false, want true")
 	}
 	var nilCtx context.Context
-	if suppressLastChunkLogFromContext(nilCtx) || suppressLastChunkLogFromContext(context.Background()) {
+	if suppressLastChunkLogFromContext(nilCtx) || suppressLastChunkLogFromContext(t.Context()) {
 		t.Fatal("suppressLastChunkLogFromContext returned true for nil/plain context")
 	}
 	if got := renderACPContentBlocks(nil); got != "" {
@@ -656,7 +655,7 @@ func TestClientWireAndIdleHelpers(t *testing.T) {
 		t.Fatalf("prompt scoped updates = %#v, want thread-1 custom/progress", updates)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	waitForUpdateIdle(ctx, make(chan struct{}))
 
@@ -666,7 +665,7 @@ func TestClientWireAndIdleHelpers(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		close(started)
-		waitForUpdateIdle(context.Background(), signal)
+		waitForUpdateIdle(t.Context(), signal)
 		close(done)
 	}()
 	<-started
@@ -771,9 +770,9 @@ func TestClientWaitLoopOutcomes(t *testing.T) {
 		wantError bool
 		wantEOF   bool
 	}{
-		{name: "success", command: []string{"sh", "-c", "exit 0"}, ctx: context.Background(), wantEOF: true},
-		{name: "process error", command: []string{"sh", "-c", "exit 7"}, ctx: context.Background(), wantError: true},
-		{name: "closing error", command: []string{"sh", "-c", "exit 7"}, ctx: context.Background(), closing: true, wantEOF: true},
+		{name: "success", command: []string{"sh", "-c", "exit 0"}, ctx: t.Context(), wantEOF: true},
+		{name: "process error", command: []string{"sh", "-c", "exit 7"}, ctx: t.Context(), wantError: true},
+		{name: "closing error", command: []string{"sh", "-c", "exit 7"}, ctx: t.Context(), closing: true, wantEOF: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -793,7 +792,7 @@ func TestClientWaitLoopOutcomes(t *testing.T) {
 		})
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	client := newWaitLoopTestClient(t, ctx, "sh", "-c", "exit 7")
 	cancel()
 	client.waitLoop()
@@ -805,7 +804,7 @@ func TestClientWaitLoopOutcomes(t *testing.T) {
 func TestClientCloseKillsRunningProcess(t *testing.T) {
 	t.Parallel()
 
-	client := newWaitLoopTestClient(t, context.Background(), "sh", "-c", "sleep 5")
+	client := newWaitLoopTestClient(t, t.Context(), "sh", "-c", "sleep 5")
 	client.stdin = testWriteCloser{}
 	go client.waitLoop()
 	if err := client.Close(); err != nil {

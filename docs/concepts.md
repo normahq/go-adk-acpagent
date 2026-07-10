@@ -37,9 +37,9 @@ the ACP coding agent and ADK orchestration in the application.
 
 ## How It Works
 
-Create an `Agent` with `Config.Command`, `Config.WorkingDir`, and optional
-process settings. Pass the returned agent to an ADK runner and call `Close`
-during shutdown.
+Create an `Agent` with `NewWithContext`, `Config.Command`,
+`Config.WorkingDir`, and optional process settings. Pass the returned agent to
+an ADK runner and call `Close` during shutdown.
 
 On the first invocation for an ADK session, the adapter creates an ACP session.
 It stores the ACP session ID under `SessionStateKey` so later invocations in
@@ -67,6 +67,11 @@ or prompt execution can fail with a wrapped ACP request error.
 
 `Config.Logger` accepts `*slog.Logger` and is used for adapter diagnostics. ACP
 subprocess stderr is controlled separately by `Config.Stderr`.
+
+Debug records contain structural fields such as session IDs, update types,
+counts, and lengths. Trace records can contain complete prompts, ACP metadata,
+resource URIs, tool data, and raw JSON-RPC payloads. Treat trace logs as
+sensitive and enable them only for controlled diagnostics.
 
 Recommended defaults:
 

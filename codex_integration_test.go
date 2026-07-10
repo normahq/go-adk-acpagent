@@ -40,7 +40,7 @@ func TestCodexACPIntegration_PromptRoundTrip(t *testing.T) {
 	_ = mustInitializeCodexACP(t, client, stderr)
 	sess := mustNewCodexACPSession(t, client, stderr, workingDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), codexIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), codexIntegrationTimeout)
 	defer cancel()
 
 	updates, resultCh, err := client.Prompt(ctx, string(sess.SessionId), "Reply with one short word.")
@@ -77,7 +77,7 @@ func TestCodexACPIntegration_ResumeSessionRoundTrip(t *testing.T) {
 
 	sess := mustNewCodexACPSession(t, client, stderr, workingDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), codexIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), codexIntegrationTimeout)
 	defer cancel()
 	if _, err := client.ResumeSessionWithMeta(ctx, string(sess.SessionId), workingDir, nil, map[string]any{
 		"resume_reason": "integration-test",
@@ -110,8 +110,7 @@ func TestCodexACPIntegration_AgentRun(t *testing.T) {
 	workingDir := requireCodexEnvironment(t)
 
 	var stderr bytes.Buffer
-	agentWithCodex, err := New(Config{
-		Context:    context.Background(),
+	agentWithCodex, err := NewWithContext(t.Context(), Config{
 		Command:    codexACPCommand(),
 		WorkingDir: workingDir,
 		Stderr:     &stderr,
@@ -120,9 +119,7 @@ func TestCodexACPIntegration_AgentRun(t *testing.T) {
 		maybeSkipCodexIntegration(t, err, stderr.String())
 		failCodexWithDetails(t, "acpagent.New failed", err, stderr.String())
 	}
-	t.Cleanup(func() {
-		_ = agentWithCodex.Close()
-	})
+	defer closeTestCloser(t, agentWithCodex)
 
 	sessionService := session.InMemoryService()
 	r, err := runnerpkg.New(runnerpkg.Config{
@@ -134,7 +131,7 @@ func TestCodexACPIntegration_AgentRun(t *testing.T) {
 		t.Fatalf("runner.New() error = %v", err)
 	}
 
-	sess, err := sessionService.Create(context.Background(), &session.CreateRequest{
+	sess, err := sessionService.Create(t.Context(), &session.CreateRequest{
 		AppName: "codex-acp-integration",
 		UserID:  "integration-user",
 	})
@@ -142,7 +139,7 @@ func TestCodexACPIntegration_AgentRun(t *testing.T) {
 		t.Fatalf("session.Create() error = %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), codexIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), codexIntegrationTimeout)
 	defer cancel()
 
 	events := 0
@@ -190,7 +187,7 @@ func newCodexACPClient(t *testing.T, workingDir string) (*Client, *bytes.Buffer)
 	t.Helper()
 
 	var stderr bytes.Buffer
-	client, err := NewClient(context.Background(), ClientConfig{
+	client, err := NewClient(t.Context(), ClientConfig{
 		Command:    codexACPCommand(),
 		WorkingDir: workingDir,
 		Stderr:     &stderr,
@@ -199,9 +196,7 @@ func newCodexACPClient(t *testing.T, workingDir string) (*Client, *bytes.Buffer)
 		maybeSkipCodexIntegration(t, err, stderr.String())
 		failCodexWithDetails(t, "start ACP client failed", err, stderr.String())
 	}
-	t.Cleanup(func() {
-		_ = client.Close()
-	})
+	defer closeTestCloser(t, client)
 	return client, &stderr
 }
 
@@ -212,7 +207,7 @@ func codexACPCommand() []string {
 func mustInitializeCodexACP(t *testing.T, client *Client, stderr *bytes.Buffer) acp.InitializeResponse {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), codexIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), codexIntegrationTimeout)
 	defer cancel()
 
 	resp, err := client.Initialize(ctx)
@@ -226,7 +221,7 @@ func mustInitializeCodexACP(t *testing.T, client *Client, stderr *bytes.Buffer) 
 func mustNewCodexACPSession(t *testing.T, client *Client, stderr *bytes.Buffer, cwd string) acp.NewSessionResponse {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), codexIntegrationTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), codexIntegrationTimeout)
 	defer cancel()
 
 	resp, err := client.NewSession(ctx, cwd, nil)

@@ -39,10 +39,13 @@ func (c *Client) logLastChunkInSeries(sessionID acp.SessionId) {
 		Bool("partial", last.partial).
 		Bool("thought", last.thought).
 		Bool("last_in_series", true)
-	if last.contentBlock != nil {
-		logEvent = logEvent.Interface("acp_content_block", last.contentBlock)
-	}
 	logEvent.Msg("received last acp chunk in series")
+	if sessionLogger.enabled(levelTrace) && last.contentBlock != nil {
+		sessionLogger.Trace().
+			Str("acp_session_id", string(sessionID)).
+			Interface("acp_content_block", last.contentBlock).
+			Msg("received last acp chunk payload")
+	}
 }
 
 func (c *Client) failAll(err error) {
@@ -119,17 +122,19 @@ func (c *Client) dispatchSessionUpdate(ext ExtendedSessionNotification) {
 	if active != nil {
 		sessionLogger = active.logger
 	}
-	logEvent := sessionLogger.Trace().
-		Str("acp_session_id", string(ext.SessionId)).
-		Str("update_kind", updateType)
+	if sessionLogger.enabled(levelTrace) {
+		logEvent := sessionLogger.Trace().
+			Str("acp_session_id", string(ext.SessionId)).
+			Str("update_kind", updateType)
 
-	if updateType == unknownValue {
-		logEvent = logEvent.RawJSON("raw_update", ext.Raw)
+		if updateType == unknownValue {
+			logEvent = logEvent.RawJSON("raw_update", ext.Raw)
+		}
+
+		logACPUpdateContentFields(logEvent, ext.Update)
+		logACPUpdateChunkFields(logEvent, ext.Update)
+		logEvent.Msg("received acp session update")
 	}
-
-	logACPUpdateContentFields(logEvent, ext.Update)
-	logACPUpdateChunkFields(logEvent, ext.Update)
-	logEvent.Msg("received acp session update")
 
 	if active == nil {
 		return

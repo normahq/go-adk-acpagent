@@ -121,12 +121,7 @@ func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 	return a.createRemoteSession(ctx, logCtx, logger, cfg, instructions.combined())
 }
 
-func (a *Agent) recoverRemoteSession(
-	ctx adkagent.InvocationContext,
-	logCtx context.Context,
-	logger logger,
-	promptErr error,
-) (remoteSession, error) {
+func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, promptErr error) (remoteSession, error) {
 	cfg, err := a.resolveSessionConfig(ctx)
 	if err != nil {
 		return remoteSession{}, err
@@ -186,13 +181,7 @@ func (a *Agent) recoverRemoteSession(
 	return recovered, nil
 }
 
-func (a *Agent) createRemoteSession(
-	ctx adkagent.InvocationContext,
-	logCtx context.Context,
-	logger logger,
-	cfg acpSessionConfig,
-	firstPromptInstructions string,
-) (remoteSession, error) {
+func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, cfg acpSessionConfig, firstPromptInstructions string) (remoteSession, error) {
 	resp, err := a.client.NewSessionWithMeta(logCtx, cfg.cwd, a.mcpServers, cfg.meta)
 	if err != nil {
 		return remoteSession{}, err
@@ -224,21 +213,21 @@ func (a *Agent) createRemoteSession(
 	}, nil
 }
 
-func (a *Agent) logBoundRemoteSession(
-	logger logger,
-	message string,
-	remoteSessionID string,
-	cwd string,
-	metaJSON string,
-) {
+func (a *Agent) logBoundRemoteSession(logger logger, message, remoteSessionID, cwd, metaJSON string) {
 	event := logger.Debug().
 		Str("acp_session_id", remoteSessionID).
 		Str("cwd", cwd).
-		RawJSON("meta", []byte(metaJSON))
+		Bool("has_meta", strings.TrimSpace(metaJSON) != "" && strings.TrimSpace(metaJSON) != "{}")
 	if len(a.sessionConfig) > 0 {
 		event = event.Int("session_config_values", len(a.sessionConfig))
 	}
 	event.Msg(message)
+	if logger.enabled(levelTrace) {
+		logger.Trace().
+			Str("acp_session_id", remoteSessionID).
+			RawJSON("meta", []byte(metaJSON)).
+			Msg(message + " payload")
+	}
 }
 
 func buildACPState(remoteSessionID, metaJSON string) map[string]any {
@@ -379,12 +368,7 @@ func parseAnySessionConfigValueMaps(values []map[string]any) ([]SessionConfigVal
 	return normalizeSessionConfigValues(parsed), nil
 }
 
-func (a *Agent) persistRemoteSessionBinding(
-	ctx adkagent.InvocationContext,
-	remoteSessionID string,
-	metaJSON string,
-	configValues []SessionConfigValue,
-) error {
+func (a *Agent) persistRemoteSessionBinding(ctx adkagent.InvocationContext, remoteSessionID, metaJSON string, configValues []SessionConfigValue) error {
 	if ctx == nil || ctx.Session() == nil || strings.TrimSpace(remoteSessionID) == "" {
 		return nil
 	}

@@ -2,8 +2,9 @@ package acperror
 
 import (
 	"fmt"
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestFromWireDataExtractsProviderError(t *testing.T) {
@@ -90,8 +91,8 @@ func TestProviderErrorMetadata(t *testing.T) {
 		"provider":   "test-provider",
 		"retryable":  true,
 	}
-	if got := err.Metadata(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("Metadata() = %#v, want %#v", got, want)
+	if diff := cmp.Diff(want, err.Metadata()); diff != "" {
+		t.Errorf("Metadata() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -176,8 +177,8 @@ func TestFromWireValueVariants(t *testing.T) {
 			if !ok {
 				return
 			}
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("FromWireValue() = %#v, want %#v", got, tc.want)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("FromWireValue() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

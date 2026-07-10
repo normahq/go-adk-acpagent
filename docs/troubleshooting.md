@@ -74,3 +74,11 @@ Before wiring a provider command into ADK, verify that it speaks ACP over
 stdin/stdout and writes logs to stderr. Provider-specific ACP inspection tools
 can help confirm initialization, session creation, config options, and prompt
 updates.
+
+## Trace Logs Contain Sensitive Payloads
+
+Debug logging intentionally omits prompt text and raw ACP content. Trace
+logging includes complete protocol payloads to support low-level diagnostics
+and can therefore expose prompts, metadata, resource URIs, tool input/output,
+and provider responses. Enable trace logging only in a controlled environment
+and apply appropriate retention and access controls.

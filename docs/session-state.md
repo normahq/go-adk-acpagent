@@ -78,7 +78,7 @@ when those fields are not already present.
 Use it for ACP session-bound choices such as model, mode, or thought level:
 
 ```go
-agentRuntime, err := acpagent.New(acpagent.Config{
+agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 	Command:    []string{"opencode", "acp"},
 	WorkingDir: "/workspace",
 	SessionConfig: []acpagent.SessionConfigValue{
@@ -101,7 +101,7 @@ Set `Config.OutputKey` to store the final visible model output in the ADK event
 state delta for the invocation:
 
 ```go
-agentRuntime, err := acpagent.New(acpagent.Config{
+agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 	Command:    []string{"opencode", "acp"},
 	WorkingDir: "/workspace",
 	OutputKey:  "last_agent_output",

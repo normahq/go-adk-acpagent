@@ -8,31 +8,54 @@ import (
 	"fmt"
 	"iter"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/google/go-cmp/cmp"
 	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/platform"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
+func TestMapACPUpdateToEventUsesContextProviders(t *testing.T) {
+	t.Parallel()
+
+	wantTime := time.Date(2026, time.July, 10, 12, 30, 0, 0, time.UTC)
+	ctx := platform.WithTimeProvider(t.Context(), func() time.Time { return wantTime })
+	ctx = platform.WithUUIDProvider(ctx, func() string { return "event-id" })
+
+	ev, ok := mapACPUpdateToEvent(ctx, newLogger(nil, ""), "inv-1", ExtendedSessionNotification{
+		SessionNotification: acp.SessionNotification{Update: acp.UpdateAgentMessageText("hello")},
+	})
+	if !ok || ev == nil {
+		t.Fatalf("mapACPUpdateToEvent() = (%#v, %v), want event true", ev, ok)
+	}
+	if ev.ID != "event-id" {
+		t.Errorf("mapACPUpdateToEvent() ID = %q, want %q", ev.ID, "event-id")
+	}
+	if !ev.Timestamp.Equal(wantTime) {
+		t.Errorf("mapACPUpdateToEvent() Timestamp = %v, want %v", ev.Timestamp, wantTime)
+	}
+}
+
 func TestMapACPUserAndThoughtChunks(t *testing.T) {
 	t.Parallel()
 
-	if ev, ok := mapACPUpdateToEvent(newLogger(nil, ""), "inv-dispatch-user", ExtendedSessionNotification{
+	if ev, ok := mapACPUpdateToEvent(t.Context(), newLogger(nil, ""), "inv-dispatch-user", ExtendedSessionNotification{
 		SessionNotification: acp.SessionNotification{Update: acp.UpdateUserMessageText("user text")},
 	}); !ok || ev == nil || ev.Content.Role != genai.RoleUser {
 		t.Fatalf("mapACPUpdateToEvent(user) = (%#v, %v), want user event true", ev, ok)
 	}
-	if ev, ok := mapACPUpdateToEvent(newLogger(nil, ""), "inv-dispatch-thought", ExtendedSessionNotification{
+	if ev, ok := mapACPUpdateToEvent(t.Context(), newLogger(nil, ""), "inv-dispatch-thought", ExtendedSessionNotification{
 		SessionNotification: acp.SessionNotification{Update: acp.UpdateAgentThoughtText("thinking")},
 	}); !ok || ev == nil || ev.Content.Role != genai.RoleModel || !ev.Content.Parts[0].Thought {
 		t.Fatalf("mapACPUpdateToEvent(thought) = (%#v, %v), want thought event true", ev, ok)
 	}
 
-	userEv, ok := mapACPUserMessageChunk(newLogger(nil, ""), "inv-user", &acp.SessionUpdateUserMessageChunk{
+	userEv, ok := mapACPUserMessageChunk(t.Context(), newLogger(nil, ""), "inv-user", &acp.SessionUpdateUserMessageChunk{
 		Content: acp.TextBlock("user text"),
 	})
 	if !ok {
@@ -42,7 +65,7 @@ func TestMapACPUserAndThoughtChunks(t *testing.T) {
 		t.Fatalf("user event = %#v", userEv)
 	}
 
-	thoughtEv, ok := mapACPAgentThoughtChunk(newLogger(nil, ""), "inv-thought", &acp.SessionUpdateAgentThoughtChunk{
+	thoughtEv, ok := mapACPAgentThoughtChunk(t.Context(), newLogger(nil, ""), "inv-thought", &acp.SessionUpdateAgentThoughtChunk{
 		Content: acp.TextBlock("thinking"),
 	})
 	if !ok {
@@ -57,7 +80,7 @@ func TestMapACPAgentMessageChunkMetadataVariants(t *testing.T) {
 	t.Parallel()
 
 	legacyID := "legacy-message"
-	ev, ok := mapACPAgentMessageChunk(newLogger(nil, ""), "inv-message", &acp.SessionUpdateAgentMessageChunk{
+	ev, ok := mapACPAgentMessageChunk(t.Context(), newLogger(nil, ""), "inv-message", &acp.SessionUpdateAgentMessageChunk{
 		Content:   acp.TextBlock("agent text"),
 		MessageId: &legacyID,
 		Meta:      map[string]any{"messageId": "meta-message"},
@@ -69,12 +92,12 @@ func TestMapACPAgentMessageChunkMetadataVariants(t *testing.T) {
 		t.Fatalf("acp_message_id = %#v, want %q", got, legacyID)
 	}
 
-	if ev, ok := mapACPAgentMessageChunk(newLogger(nil, ""), "inv-empty", &acp.SessionUpdateAgentMessageChunk{}); ok || ev != nil {
+	if ev, ok := mapACPAgentMessageChunk(t.Context(), newLogger(nil, ""), "inv-empty", &acp.SessionUpdateAgentMessageChunk{}); ok || ev != nil {
 		t.Fatalf("mapACPAgentMessageChunk(empty) = (%#v, %v), want nil false", ev, ok)
 	}
 
 	directID := "msg-direct"
-	directEv, ok := mapACPAgentMessageChunk(newLogger(nil, ""), "inv-direct", &acp.SessionUpdateAgentMessageChunk{
+	directEv, ok := mapACPAgentMessageChunk(t.Context(), newLogger(nil, ""), "inv-direct", &acp.SessionUpdateAgentMessageChunk{
 		Content:   acp.TextBlock("direct id"),
 		MessageId: &directID,
 	})
@@ -155,7 +178,8 @@ func TestMapACPContentBlockToPartRejectsUnsupportedMedia(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if part, ok := mapACPContentBlockToPart(newLogger(nil, ""), tc.block); ok {
+			logger := testLogger(&testLogBuffer{}, levelTrace)
+			if part, ok := mapACPContentBlockToPart(logger, tc.block); ok {
 				t.Fatalf("mapACPContentBlockToPart() = (%#v, true), want false", part)
 			}
 		})
@@ -165,23 +189,23 @@ func TestMapACPContentBlockToPartRejectsUnsupportedMedia(t *testing.T) {
 func TestMapACPMappingEdgeCases(t *testing.T) {
 	t.Parallel()
 
-	if ev, ok := mapACPUserMessageChunk(newLogger(nil, ""), "inv-user", &acp.SessionUpdateUserMessageChunk{}); ok || ev != nil {
+	if ev, ok := mapACPUserMessageChunk(t.Context(), newLogger(nil, ""), "inv-user", &acp.SessionUpdateUserMessageChunk{}); ok || ev != nil {
 		t.Fatalf("mapACPUserMessageChunk(empty) = (%#v, %v), want nil false", ev, ok)
 	}
-	if ev, ok := mapACPAgentThoughtChunk(newLogger(nil, ""), "inv-thought", &acp.SessionUpdateAgentThoughtChunk{}); ok || ev != nil {
+	if ev, ok := mapACPAgentThoughtChunk(t.Context(), newLogger(nil, ""), "inv-thought", &acp.SessionUpdateAgentThoughtChunk{}); ok || ev != nil {
 		t.Fatalf("mapACPAgentThoughtChunk(empty) = (%#v, %v), want nil false", ev, ok)
 	}
 
 	pending := acp.ToolCallStatusPending
-	ev, ok := mapACPToolCallUpdate("inv-tool", &acp.SessionToolCallUpdate{ToolCallId: "tool-1", Status: &pending})
+	ev, ok := mapACPToolCallUpdate(t.Context(), "inv-tool", &acp.SessionToolCallUpdate{ToolCallId: "tool-1", Status: &pending})
 	if !ok {
 		t.Fatal("mapACPToolCallUpdate(pending) ok = false, want true")
 	}
-	if !reflect.DeepEqual(ev.LongRunningToolIDs, []string{"tool-1"}) {
-		t.Fatalf("LongRunningToolIDs = %#v, want tool-1", ev.LongRunningToolIDs)
+	if diff := cmp.Diff([]string{"tool-1"}, ev.LongRunningToolIDs); diff != "" {
+		t.Errorf("LongRunningToolIDs mismatch (-want +got):\n%s", diff)
 	}
 	completed := acp.ToolCallStatusCompleted
-	ev, ok = mapACPToolCallUpdate("inv-tool", &acp.SessionToolCallUpdate{ToolCallId: "tool-1", Status: &completed})
+	ev, ok = mapACPToolCallUpdate(t.Context(), "inv-tool", &acp.SessionToolCallUpdate{ToolCallId: "tool-1", Status: &completed})
 	if !ok {
 		t.Fatal("mapACPToolCallUpdate(completed) ok = false, want true")
 	}
@@ -198,8 +222,9 @@ func TestMapACPMappingEdgeCases(t *testing.T) {
 	if got := mapACPResourceLinkToPart(nil); got != nil {
 		t.Fatalf("mapACPResourceLinkToPart(nil) = %#v, want nil", got)
 	}
-	logUnsupportedACPUpdate(newLogger(nil, ""), ExtendedSessionNotification{Raw: []byte(`{"update":{"sessionUpdate":"custom"}}`)})
-	logUnsupportedACPUpdate(newLogger(nil, ""), ExtendedSessionNotification{Raw: []byte(`{"not":"update"}`)})
+	logger := testLogger(&testLogBuffer{}, levelTrace)
+	logUnsupportedACPUpdate(logger, ExtendedSessionNotification{Raw: []byte(`{"update":{"sessionUpdate":"custom"}}`)})
+	logUnsupportedACPUpdate(logger, ExtendedSessionNotification{Raw: []byte(`{"not":"update"}`)})
 }
 
 func TestMapACPUpdateToEventIgnoredAndLegacyUsage(t *testing.T) {
@@ -215,13 +240,14 @@ func TestMapACPUpdateToEventIgnoredAndLegacyUsage(t *testing.T) {
 	for i, update := range ignoredUpdates {
 		t.Run(fmt.Sprintf("ignored_%d", i), func(t *testing.T) {
 			t.Parallel()
-			if ev, ok := mapACPUpdateToEvent(newLogger(nil, ""), "inv", ExtendedSessionNotification{SessionNotification: acp.SessionNotification{Update: update}}); ok {
+			logger := testLogger(&testLogBuffer{}, levelTrace)
+			if ev, ok := mapACPUpdateToEvent(t.Context(), logger, "inv", ExtendedSessionNotification{SessionNotification: acp.SessionNotification{Update: update}}); ok {
 				t.Fatalf("mapACPUpdateToEvent() = (%#v, true), want false", ev)
 			}
 		})
 	}
 
-	ev, ok := mapACPUpdateToEvent(newLogger(nil, ""), "inv-usage", ExtendedSessionNotification{
+	ev, ok := mapACPUpdateToEvent(t.Context(), newLogger(nil, ""), "inv-usage", ExtendedSessionNotification{
 		SessionNotification: acp.SessionNotification{},
 		Raw:                 []byte(`{"update":{"sessionUpdate":"usage_update","inputTokens":7,"outputTokens":11,"totalTokens":18}}`),
 	})
@@ -235,7 +261,7 @@ func TestMapACPUpdateToEventIgnoredAndLegacyUsage(t *testing.T) {
 		t.Fatal("legacy usage event Partial = false, want true")
 	}
 
-	if ev, ok := mapACPLegacyUsageUpdate(newLogger(nil, ""), "inv-empty", map[string]any{"sessionUpdate": acpUsageUpdate}); ok {
+	if ev, ok := mapACPLegacyUsageUpdate(t.Context(), newLogger(nil, ""), "inv-empty", map[string]any{"sessionUpdate": acpUsageUpdate}); ok {
 		t.Fatalf("mapACPLegacyUsageUpdate(empty) = (%#v, true), want false", ev)
 	}
 }
@@ -269,8 +295,8 @@ func TestContentBlockLogHelpers(t *testing.T) {
 		"size":        42,
 		"title":       "Readme",
 	}
-	if got := acpContentBlockLogValue(link); !reflect.DeepEqual(got, wantLink) {
-		t.Fatalf("acpContentBlockLogValue(link) = %#v, want %#v", got, wantLink)
+	if diff := cmp.Diff(wantLink, acpContentBlockLogValue(link)); diff != "" {
+		t.Errorf("acpContentBlockLogValue(link) mismatch (-want +got):\n%s", diff)
 	}
 
 	textResource := acp.ResourceBlock(acp.EmbeddedResourceResource{
@@ -285,8 +311,8 @@ func TestContentBlockLogHelpers(t *testing.T) {
 			"text_len":  5,
 		},
 	}
-	if got := acpContentBlockLogValue(textResource); !reflect.DeepEqual(got, wantTextResource) {
-		t.Fatalf("acpContentBlockLogValue(text resource) = %#v, want %#v", got, wantTextResource)
+	if diff := cmp.Diff(wantTextResource, acpContentBlockLogValue(textResource)); diff != "" {
+		t.Errorf("acpContentBlockLogValue(text resource) mismatch (-want +got):\n%s", diff)
 	}
 
 	blobResource := acp.ResourceBlock(acp.EmbeddedResourceResource{
@@ -301,12 +327,12 @@ func TestContentBlockLogHelpers(t *testing.T) {
 			"blob_len":  4,
 		},
 	}
-	if got := acpContentBlockLogValue(blobResource); !reflect.DeepEqual(got, wantBlobResource) {
-		t.Fatalf("acpContentBlockLogValue(blob resource) = %#v, want %#v", got, wantBlobResource)
+	if diff := cmp.Diff(wantBlobResource, acpContentBlockLogValue(blobResource)); diff != "" {
+		t.Errorf("acpContentBlockLogValue(blob resource) mismatch (-want +got):\n%s", diff)
 	}
 
-	if got := acpEmbeddedResourceLogValue(acp.EmbeddedResourceResource{}); !reflect.DeepEqual(got, map[string]any{"kind": unknownValue}) {
-		t.Fatalf("acpEmbeddedResourceLogValue(empty) = %#v", got)
+	if diff := cmp.Diff(map[string]any{"kind": unknownValue}, acpEmbeddedResourceLogValue(acp.EmbeddedResourceResource{})); diff != "" {
+		t.Errorf("acpEmbeddedResourceLogValue(empty) mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -378,12 +404,12 @@ func TestLoggerContextHelpers(t *testing.T) {
 	if got := loggerFromContext(nilCtx, newLogger(nil, "fallback"), "sub"); got.inner == nil {
 		t.Fatal("loggerFromContext(nil) returned nil inner logger")
 	}
-	if got := loggerFromContext(context.WithValue(context.Background(), loggerContextKey{}, logger{}), newLogger(nil, "fallback"), "sub"); got.inner == nil {
+	if got := loggerFromContext(context.WithValue(t.Context(), loggerContextKey{}, logger{}), newLogger(nil, "fallback"), "sub"); got.inner == nil {
 		t.Fatal("loggerFromContext(nil stored logger) returned nil inner logger")
 	}
 
 	fallback := newLogger(nil, "fallback")
-	if got := loggerFromContext(context.Background(), fallback, "sub"); got.inner == nil {
+	if got := loggerFromContext(t.Context(), fallback, "sub"); got.inner == nil {
 		t.Fatal("loggerFromContext(fallback) returned nil inner logger")
 	}
 }
@@ -435,18 +461,19 @@ func TestAgentPureErrorHelpers(t *testing.T) {
 func TestAgentStateDeltaHelpers(t *testing.T) {
 	t.Parallel()
 
-	if got := buildACPState("session-1", ""); !reflect.DeepEqual(got, map[string]any{"session_id": "session-1"}) {
-		t.Fatalf("buildACPState(empty meta) = %#v, want session only", got)
+	wantSessionOnly := map[string]any{"session_id": "session-1"}
+	if diff := cmp.Diff(wantSessionOnly, buildACPState("session-1", "")); diff != "" {
+		t.Errorf("buildACPState(empty meta) mismatch (-want +got):\n%s", diff)
 	}
-	if got := buildACPState("session-1", "{"); !reflect.DeepEqual(got, map[string]any{"session_id": "session-1"}) {
-		t.Fatalf("buildACPState(invalid meta) = %#v, want session only", got)
+	if diff := cmp.Diff(wantSessionOnly, buildACPState("session-1", "{")); diff != "" {
+		t.Errorf("buildACPState(invalid meta) mismatch (-want +got):\n%s", diff)
 	}
 	if currentACPStateMatches(nil, "session-1", "{}") {
 		t.Fatal("currentACPStateMatches(nil) = true, want false")
 	}
 
 	sessionService := session.InMemoryService()
-	created, err := sessionService.Create(context.Background(), &session.CreateRequest{
+	created, err := sessionService.Create(t.Context(), &session.CreateRequest{
 		AppName: "test-app",
 		UserID:  "test-user",
 		State: map[string]any{
@@ -490,8 +517,8 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("State().Get(%q) error = %v", SessionStateKey, err)
 	}
-	if !reflect.DeepEqual(liveACPState, wantLiveACPState) {
-		t.Fatalf("live acp state = %#v, want %#v", liveACPState, wantLiveACPState)
+	if diff := cmp.Diff(wantLiveACPState, liveACPState); diff != "" {
+		t.Errorf("live acp state mismatch (-want +got):\n%s", diff)
 	}
 	setErr := errors.New("set failed")
 	matchingState := map[string]any{"session_id": "session-1"}
@@ -509,19 +536,19 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 	(&Agent{outputKey: "out"}).persistSessionStateDelta(nil, "session-1", "{}", nil)
 	(&Agent{outputKey: "out"}).maybeSaveOutputToState(nil, "text")
 
-	emptyRemote := session.NewEvent(context.Background(), "inv-empty-remote")
+	emptyRemote := session.NewEvent(t.Context(), "inv-empty-remote")
 	(&Agent{outputKey: "out"}).persistSessionStateDelta(emptyRemote, " ", "{}", nil)
 	if len(emptyRemote.Actions.StateDelta) != 0 {
 		t.Fatalf("empty remote StateDelta = %#v, want empty", emptyRemote.Actions.StateDelta)
 	}
 
-	withoutOutputKey := session.NewEvent(context.Background(), "inv-without-output")
+	withoutOutputKey := session.NewEvent(t.Context(), "inv-without-output")
 	(&Agent{}).maybeSaveOutputToState(withoutOutputKey, "text")
 	if len(withoutOutputKey.Actions.StateDelta) != 0 {
 		t.Fatalf("without output key StateDelta = %#v, want empty", withoutOutputKey.Actions.StateDelta)
 	}
 
-	partial := session.NewEvent(context.Background(), "inv-partial")
+	partial := session.NewEvent(t.Context(), "inv-partial")
 	partial.Partial = true
 	(&Agent{outputKey: "out"}).persistSessionStateDelta(partial, "session-1", `{"x":1}`, nil)
 	(&Agent{outputKey: "out"}).maybeSaveOutputToState(partial, "text")
@@ -529,19 +556,19 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 		t.Fatalf("partial StateDelta = %#v, want empty", partial.Actions.StateDelta)
 	}
 
-	ev := session.NewEvent(context.Background(), "inv")
+	ev := session.NewEvent(t.Context(), "inv")
 	agent := &Agent{outputKey: "out"}
 	agent.persistSessionStateDelta(ev, "session-1", `{"x":1}`, nil)
 	agent.maybeSaveOutputToState(ev, "visible")
 	wantACPState := map[string]any{"session_id": "session-1", "meta": map[string]any{"x": float64(1)}}
-	if !reflect.DeepEqual(ev.Actions.StateDelta[SessionStateKey], wantACPState) {
-		t.Fatalf("acp StateDelta = %#v, want %#v", ev.Actions.StateDelta[SessionStateKey], wantACPState)
+	if diff := cmp.Diff(wantACPState, ev.Actions.StateDelta[SessionStateKey]); diff != "" {
+		t.Errorf("acp StateDelta mismatch (-want +got):\n%s", diff)
 	}
 	if got := ev.Actions.StateDelta["out"]; got != "visible" {
 		t.Fatalf("output StateDelta = %#v, want visible", got)
 	}
 
-	evWithModel := session.NewEvent(context.Background(), "inv-model")
+	evWithModel := session.NewEvent(t.Context(), "inv-model")
 	agent.persistSessionStateDelta(evWithModel, "session-1", "{}", modelConfig)
 	wantACPStateWithModel := map[string]any{
 		"session_id": "session-1",
@@ -549,15 +576,15 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 			{"id": "model", "value": "openai/gpt-5.4"},
 		},
 	}
-	if !reflect.DeepEqual(evWithModel.Actions.StateDelta[SessionStateKey], wantACPStateWithModel) {
-		t.Fatalf("model acp StateDelta = %#v, want %#v", evWithModel.Actions.StateDelta[SessionStateKey], wantACPStateWithModel)
+	if diff := cmp.Diff(wantACPStateWithModel, evWithModel.Actions.StateDelta[SessionStateKey]); diff != "" {
+		t.Errorf("model acp StateDelta mismatch (-want +got):\n%s", diff)
 	}
 
 	zeroEvent := &session.Event{}
 	agent.persistSessionStateDelta(zeroEvent, "session-2", "{}", nil)
 	agent.maybeSaveOutputToState(zeroEvent, "saved")
-	if got := zeroEvent.Actions.StateDelta[SessionStateKey]; !reflect.DeepEqual(got, map[string]any{"session_id": "session-2"}) {
-		t.Fatalf("zero event acp StateDelta = %#v, want session-2", got)
+	if diff := cmp.Diff(map[string]any{"session_id": "session-2"}, zeroEvent.Actions.StateDelta[SessionStateKey]); diff != "" {
+		t.Errorf("zero event acp StateDelta mismatch (-want +got):\n%s", diff)
 	}
 	if got := zeroEvent.Actions.StateDelta["out"]; got != "saved" {
 		t.Fatalf("zero event output StateDelta = %#v, want saved", got)
@@ -567,7 +594,7 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 func TestSessionConfigUpdateMappers(t *testing.T) {
 	t.Parallel()
 
-	if ev, ok := mapACPConfigOptionUpdate("inv-1", "session-1", &acp.SessionConfigOptionUpdate{
+	if ev, ok := mapACPConfigOptionUpdate(t.Context(), "inv-1", "session-1", &acp.SessionConfigOptionUpdate{
 		ConfigOptions: []acp.SessionConfigOption{{
 			Select: &acp.SessionConfigOptionSelect{
 				Id:           "model",
@@ -583,12 +610,15 @@ func TestSessionConfigUpdateMappers(t *testing.T) {
 				{"id": "model", "value": "gpt-5-codex"},
 			},
 		}
-		if !ev.Partial || !reflect.DeepEqual(ev.Actions.StateDelta[SessionStateKey], want) {
-			t.Fatalf("mapACPConfigOptionUpdate() state = %#v, partial = %v; want %#v true", ev.Actions.StateDelta[SessionStateKey], ev.Partial, want)
+		if !ev.Partial {
+			t.Error("mapACPConfigOptionUpdate() Partial = false, want true")
+		}
+		if diff := cmp.Diff(want, ev.Actions.StateDelta[SessionStateKey]); diff != "" {
+			t.Errorf("mapACPConfigOptionUpdate() state mismatch (-want +got):\n%s", diff)
 		}
 	}
 
-	if ev, ok := mapACPConfigOptionUpdate("inv-bool", "session-1", &acp.SessionConfigOptionUpdate{
+	if ev, ok := mapACPConfigOptionUpdate(t.Context(), "inv-bool", "session-1", &acp.SessionConfigOptionUpdate{
 		ConfigOptions: []acp.SessionConfigOption{{
 			Boolean: &acp.SessionConfigOptionBoolean{
 				Id:           "fast_mode",
@@ -604,12 +634,15 @@ func TestSessionConfigUpdateMappers(t *testing.T) {
 				{"id": "fast_mode", "type": "boolean", "value": true},
 			},
 		}
-		if !ev.Partial || !reflect.DeepEqual(ev.Actions.StateDelta[SessionStateKey], want) {
-			t.Fatalf("mapACPConfigOptionUpdate(boolean) state = %#v, partial = %v; want %#v true", ev.Actions.StateDelta[SessionStateKey], ev.Partial, want)
+		if !ev.Partial {
+			t.Error("mapACPConfigOptionUpdate(boolean) Partial = false, want true")
+		}
+		if diff := cmp.Diff(want, ev.Actions.StateDelta[SessionStateKey]); diff != "" {
+			t.Errorf("mapACPConfigOptionUpdate(boolean) state mismatch (-want +got):\n%s", diff)
 		}
 	}
 
-	if ev, ok := mapACPCurrentModeUpdate("inv-2", "session-1", &acp.SessionCurrentModeUpdate{CurrentModeId: "coding"}); !ok {
+	if ev, ok := mapACPCurrentModeUpdate(t.Context(), "inv-2", "session-1", &acp.SessionCurrentModeUpdate{CurrentModeId: "coding"}); !ok {
 		t.Fatal("mapACPCurrentModeUpdate() ok = false, want true")
 	} else {
 		want := map[string]any{
@@ -618,21 +651,24 @@ func TestSessionConfigUpdateMappers(t *testing.T) {
 				{"id": "mode", "value": "coding"},
 			},
 		}
-		if !ev.Partial || !reflect.DeepEqual(ev.Actions.StateDelta[SessionStateKey], want) {
-			t.Fatalf("mapACPCurrentModeUpdate() state = %#v, partial = %v; want %#v true", ev.Actions.StateDelta[SessionStateKey], ev.Partial, want)
+		if !ev.Partial {
+			t.Error("mapACPCurrentModeUpdate() Partial = false, want true")
+		}
+		if diff := cmp.Diff(want, ev.Actions.StateDelta[SessionStateKey]); diff != "" {
+			t.Errorf("mapACPCurrentModeUpdate() state mismatch (-want +got):\n%s", diff)
 		}
 	}
 
-	if ev, ok := mapACPConfigOptionUpdate("inv-3", "", &acp.SessionConfigOptionUpdate{}); ok || ev != nil {
+	if ev, ok := mapACPConfigOptionUpdate(t.Context(), "inv-3", "", &acp.SessionConfigOptionUpdate{}); ok || ev != nil {
 		t.Fatalf("mapACPConfigOptionUpdate(empty session) = (%#v, %v), want nil false", ev, ok)
 	}
-	if ev, ok := mapACPConfigOptionUpdate("inv-4", "session-1", &acp.SessionConfigOptionUpdate{}); ok || ev != nil {
+	if ev, ok := mapACPConfigOptionUpdate(t.Context(), "inv-4", "session-1", &acp.SessionConfigOptionUpdate{}); ok || ev != nil {
 		t.Fatalf("mapACPConfigOptionUpdate(empty values) = (%#v, %v), want nil false", ev, ok)
 	}
-	if ev, ok := mapACPCurrentModeUpdate("inv-5", "session-1", &acp.SessionCurrentModeUpdate{}); ok || ev != nil {
+	if ev, ok := mapACPCurrentModeUpdate(t.Context(), "inv-5", "session-1", &acp.SessionCurrentModeUpdate{}); ok || ev != nil {
 		t.Fatalf("mapACPCurrentModeUpdate(empty mode) = (%#v, %v), want nil false", ev, ok)
 	}
-	if ev, ok := mapACPCurrentModeUpdate("inv-6", "session-1", nil); ok || ev != nil {
+	if ev, ok := mapACPCurrentModeUpdate(t.Context(), "inv-6", "session-1", nil); ok || ev != nil {
 		t.Fatalf("mapACPCurrentModeUpdate(nil) = (%#v, %v), want nil false", ev, ok)
 	}
 }
@@ -767,7 +803,7 @@ func TestAgentMetadataAndTextHelpers(t *testing.T) {
 	}
 
 	sessionService := session.InMemoryService()
-	templateSession, err := sessionService.Create(context.Background(), &session.CreateRequest{
+	templateSession, err := sessionService.Create(t.Context(), &session.CreateRequest{
 		AppName: "test-app",
 		UserID:  "test-user",
 		State:   map[string]any{"nullable": nil},
@@ -851,7 +887,7 @@ func TestAgentSessionConfigErrorBranches(t *testing.T) {
 	}
 
 	sessionService := session.InMemoryService()
-	created, err := sessionService.Create(context.Background(), &session.CreateRequest{
+	created, err := sessionService.Create(t.Context(), &session.CreateRequest{
 		AppName: "test-app",
 		UserID:  "test-user",
 		State: map[string]any{
@@ -875,8 +911,8 @@ func TestAgentSessionConfigErrorBranches(t *testing.T) {
 		t.Fatalf("resolveSessionConfig(configured values) error = %v", err)
 	}
 	wantConfiguredValues := []SessionConfigValue{{ID: "model", Value: "state-model"}, {ID: "mode", Value: "code"}}
-	if !reflect.DeepEqual(configuredValues.configValues, wantConfiguredValues) {
-		t.Fatalf("resolveSessionConfig(configured values) configValues = %#v, want %#v", configuredValues.configValues, wantConfiguredValues)
+	if diff := cmp.Diff(wantConfiguredValues, configuredValues.configValues); diff != "" {
+		t.Errorf("resolveSessionConfig(configured values) configValues mismatch (-want +got):\n%s", diff)
 	}
 
 	stateValues, err := (&Agent{workingDir: t.TempDir()}).resolveSessionConfig(testInvocationContext{session: created.Session})
@@ -884,11 +920,11 @@ func TestAgentSessionConfigErrorBranches(t *testing.T) {
 		t.Fatalf("resolveSessionConfig(state values) error = %v", err)
 	}
 	wantStateValues := []SessionConfigValue{{ID: "model", Value: "state-model"}}
-	if !reflect.DeepEqual(stateValues.configValues, wantStateValues) {
-		t.Fatalf("resolveSessionConfig(state values) configValues = %#v, want %#v", stateValues.configValues, wantStateValues)
+	if diff := cmp.Diff(wantStateValues, stateValues.configValues); diff != "" {
+		t.Errorf("resolveSessionConfig(state values) configValues mismatch (-want +got):\n%s", diff)
 	}
 
-	badState, err := sessionService.Create(context.Background(), &session.CreateRequest{
+	badState, err := sessionService.Create(t.Context(), &session.CreateRequest{
 		AppName: "test-app",
 		UserID:  "test-user",
 		State: map[string]any{
@@ -943,7 +979,7 @@ func TestAgentSessionConfigErrorBranches(t *testing.T) {
 	}
 	for _, tc := range resolveConfigErrorCases {
 		t.Run(tc.name, func(t *testing.T) {
-			sessionWithState, err := sessionService.Create(context.Background(), &session.CreateRequest{
+			sessionWithState, err := sessionService.Create(t.Context(), &session.CreateRequest{
 				AppName: "test-app",
 				UserID:  "test-user",
 				State:   tc.state,
@@ -958,7 +994,7 @@ func TestAgentSessionConfigErrorBranches(t *testing.T) {
 		})
 	}
 
-	noACPState, err := sessionService.Create(context.Background(), &session.CreateRequest{
+	noACPState, err := sessionService.Create(t.Context(), &session.CreateRequest{
 		AppName: "test-app",
 		UserID:  "test-user",
 	})
@@ -1002,8 +1038,11 @@ func TestAgentConfigConversionHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convertMCPServers(stdio args) error = %v", err)
 	}
-	if len(stdio) != 1 || stdio[0].Stdio == nil || !reflect.DeepEqual(stdio[0].Stdio.Args, []string{"--flag"}) {
+	if len(stdio) != 1 || stdio[0].Stdio == nil {
 		t.Fatalf("convertMCPServers(stdio args) = %#v, want args fallback", stdio)
+	}
+	if diff := cmp.Diff([]string{"--flag"}, stdio[0].Stdio.Args); diff != "" {
+		t.Errorf("convertMCPServers(stdio args) mismatch (-want +got):\n%s", diff)
 	}
 
 	if _, err := convertMCPServers(map[string]MCPServerConfig{"bad": {Type: MCPServerTypeStdio}}); err == nil {

@@ -63,6 +63,8 @@ type ClientConfig struct {
 	// PermissionHandler decides how to respond to ACP permission requests.
 	PermissionHandler PermissionHandler
 	// Logger is the slog logger to use for this client.
+	// Trace-level records can contain complete ACP payloads and other sensitive
+	// content.
 	Logger *slog.Logger
 }
 
@@ -70,7 +72,9 @@ type ClientConfig struct {
 // to allow access to fields not yet supported by the SDK.
 type ExtendedSessionNotification struct {
 	acp.SessionNotification
-	Raw    json.RawMessage
+	// Raw is the original JSON notification payload.
+	Raw json.RawMessage
+	// Method is the JSON-RPC notification method.
 	Method string
 }
 
@@ -118,15 +122,22 @@ type loggedACPChunk struct {
 
 // PromptResult contains the terminal Prompt RPC response, usage metadata, or an error.
 type PromptResult struct {
+	// Response is the terminal ACP prompt response when Err is nil.
 	Response acp.PromptResponse
-	Usage    *acp.Usage
-	Raw      json.RawMessage
-	Err      error
+	// Usage is the token usage reported with Response, when available.
+	Usage *acp.Usage
+	// Raw is the JSON representation of Response.
+	Raw json.RawMessage
+	// Err is an asynchronous prompt error. Synchronous validation errors are
+	// returned directly from Prompt or PromptWithContent.
+	Err error
 }
 
 var _ acp.Client = (*Client)(nil)
 
 // NewClient starts an ACP subprocess and returns a protocol client over stdio.
+// The caller must call [Client.Close] to release the subprocess and associated
+// resources.
 func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if len(cfg.Command) == 0 {
 		return nil, errors.New("acp command is required")
@@ -135,7 +146,7 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		ctx = context.Background()
 	}
 
-	l := newLogger(cfg.Logger, "acpagent.client")
+	l := newLogger(cfg.Logger, "acpagent.client").withContext(ctx)
 	clientName := strings.TrimSpace(cfg.ClientName)
 	if clientName == "" {
 		clientName = defaultClientName
@@ -274,12 +285,7 @@ func (c *Client) NewSession(ctx context.Context, cwd string, mcpServers []acp.Mc
 // directory and sends optional _meta extensions with the session request.
 //
 // The ACP protocol requires cwd to be an absolute path.
-func (c *Client) NewSessionWithMeta(
-	ctx context.Context,
-	cwd string,
-	mcpServers []acp.McpServer,
-	meta map[string]any,
-) (acp.NewSessionResponse, error) {
+func (c *Client) NewSessionWithMeta(ctx context.Context, cwd string, mcpServers []acp.McpServer, meta map[string]any) (acp.NewSessionResponse, error) {
 	if mcpServers == nil {
 		mcpServers = []acp.McpServer{}
 	}
@@ -340,13 +346,7 @@ func (c *Client) ResumeSession(ctx context.Context, sessionID, cwd string, mcpSe
 // directory and sends optional _meta extensions with the resume request.
 //
 // The ACP protocol requires cwd to be an absolute path.
-func (c *Client) ResumeSessionWithMeta(
-	ctx context.Context,
-	sessionID,
-	cwd string,
-	mcpServers []acp.McpServer,
-	meta map[string]any,
-) (acp.ResumeSessionResponse, error) {
+func (c *Client) ResumeSessionWithMeta(ctx context.Context, sessionID, cwd string, mcpServers []acp.McpServer, meta map[string]any) (acp.ResumeSessionResponse, error) {
 	trimmedSessionID, normalizedMCP, reqMeta, err := normalizeSessionRestoreInput(sessionID, mcpServers, meta)
 	if err != nil {
 		return acp.ResumeSessionResponse{}, err
@@ -380,13 +380,7 @@ func (c *Client) LoadSession(ctx context.Context, sessionID, cwd string, mcpServ
 // directory and sends optional _meta extensions with the load request.
 //
 // The ACP protocol requires cwd to be an absolute path.
-func (c *Client) LoadSessionWithMeta(
-	ctx context.Context,
-	sessionID,
-	cwd string,
-	mcpServers []acp.McpServer,
-	meta map[string]any,
-) (acp.LoadSessionResponse, error) {
+func (c *Client) LoadSessionWithMeta(ctx context.Context, sessionID, cwd string, mcpServers []acp.McpServer, meta map[string]any) (acp.LoadSessionResponse, error) {
 	trimmedSessionID, normalizedMCP, reqMeta, err := normalizeSessionRestoreInput(sessionID, mcpServers, meta)
 	if err != nil {
 		return acp.LoadSessionResponse{}, err
@@ -409,11 +403,7 @@ func (c *Client) LoadSessionWithMeta(
 	return resp, nil
 }
 
-func normalizeSessionRestoreInput(
-	sessionID string,
-	mcpServers []acp.McpServer,
-	meta map[string]any,
-) (trimmedSessionID string, normalizedMCP []acp.McpServer, reqMeta map[string]any, err error) {
+func normalizeSessionRestoreInput(sessionID string, mcpServers []acp.McpServer, meta map[string]any) (trimmedSessionID string, normalizedMCP []acp.McpServer, reqMeta map[string]any, err error) {
 	trimmedSessionID = strings.TrimSpace(sessionID)
 	if trimmedSessionID == "" {
 		return "", nil, nil, errSessionIDRequired
@@ -426,13 +416,7 @@ func normalizeSessionRestoreInput(
 	return trimmedSessionID, normalizedMCP, reqMeta, nil
 }
 
-func (c *Client) logSessionRestoreStart(
-	ctx context.Context,
-	method string,
-	sessionID string,
-	cwd string,
-	mcpServers []acp.McpServer,
-) {
+func (c *Client) logSessionRestoreStart(ctx context.Context, method, sessionID, cwd string, mcpServers []acp.McpServer) {
 	l := c.loggerForContext(ctx)
 	l.Debug().
 		Str("acp_session_id", sessionID).
@@ -456,13 +440,7 @@ func (c *Client) logSessionRestoreSuccess(ctx context.Context, method, sessionID
 //  2. optionally SetSessionConfigOption(...) for ACP session config values
 //
 // The ACP protocol requires cwd to be an absolute path.
-func (c *Client) CreateSessionWithMeta(
-	ctx context.Context,
-	cwd string,
-	configValues []SessionConfigValue,
-	mcpServers []acp.McpServer,
-	meta map[string]any,
-) (acp.NewSessionResponse, error) {
+func (c *Client) CreateSessionWithMeta(ctx context.Context, cwd string, configValues []SessionConfigValue, mcpServers []acp.McpServer, meta map[string]any) (acp.NewSessionResponse, error) {
 	resp, err := c.NewSessionWithMeta(ctx, cwd, mcpServers, meta)
 	if err != nil {
 		return acp.NewSessionResponse{}, err
@@ -473,13 +451,7 @@ func (c *Client) CreateSessionWithMeta(
 	return resp, nil
 }
 
-func (c *Client) applySessionConfig(
-	ctx context.Context,
-	sessionID string,
-	values []SessionConfigValue,
-	configOptions []acp.SessionConfigOption,
-	modes *acp.SessionModeState,
-) ([]SessionConfigValue, error) {
+func (c *Client) applySessionConfig(ctx context.Context, sessionID string, values []SessionConfigValue, configOptions []acp.SessionConfigOption, modes *acp.SessionModeState) ([]SessionConfigValue, error) {
 	l := c.loggerForContext(ctx)
 	currentOptions := configOptions
 	for _, value := range normalizeSessionConfigValues(values) {
@@ -536,12 +508,7 @@ func findSessionConfigOption(options []acp.SessionConfigOption, id string) *acp.
 	return nil
 }
 
-func buildSetSessionConfigOptionRequest(
-	sessionID string,
-	optionID string,
-	value SessionConfigValue,
-	option acp.SessionConfigOption,
-) (acp.SetSessionConfigOptionRequest, error) {
+func buildSetSessionConfigOptionRequest(sessionID, optionID string, value SessionConfigValue, option acp.SessionConfigOption) (acp.SetSessionConfigOptionRequest, error) {
 	if option.Boolean != nil {
 		if value.BoolValue == nil {
 			return acp.SetSessionConfigOptionRequest{}, fmt.Errorf("acp session config option %q requires a boolean value", optionID)
@@ -607,10 +574,7 @@ func collectSessionConfigValues(options []acp.SessionConfigOption, modes *acp.Se
 }
 
 // SetSessionConfigOption sets an ACP session configuration option.
-func (c *Client) SetSessionConfigOption(
-	ctx context.Context,
-	req acp.SetSessionConfigOptionRequest,
-) (acp.SetSessionConfigOptionResponse, error) {
+func (c *Client) SetSessionConfigOption(ctx context.Context, req acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
 	l := c.loggerForContext(ctx)
 	l.Debug().Msg("sending acp session/set_config_option")
 	resp, err := c.conn.SetSessionConfigOption(ctx, req)
@@ -706,6 +670,12 @@ func acpRequestErrorDataString(data any) string {
 }
 
 // Prompt sends a prompt to an ACP session and streams session updates.
+//
+// The caller must continuously receive from both returned channels until they
+// close. The update channel preserves ACP notification order. The result
+// channel sends exactly one PromptResult and then closes. Canceling ctx stops
+// the prompt. Starting another prompt for the same session before both streams
+// finish returns [ErrPromptAlreadyActive].
 func (c *Client) Prompt(ctx context.Context, sessionID, prompt string) (<-chan ExtendedSessionNotification, <-chan PromptResult, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return nil, nil, errPromptRequired
@@ -714,7 +684,8 @@ func (c *Client) Prompt(ctx context.Context, sessionID, prompt string) (<-chan E
 }
 
 // PromptWithContent sends a prompt composed of ACP content blocks and streams
-// session updates.
+// session updates. Its channel and cancellation contract is the same as
+// [Client.Prompt].
 func (c *Client) PromptWithContent(ctx context.Context, sessionID string, prompt []acp.ContentBlock) (<-chan ExtendedSessionNotification, <-chan PromptResult, error) {
 	if len(prompt) == 0 {
 		return nil, nil, errPromptContentReq
@@ -722,12 +693,7 @@ func (c *Client) PromptWithContent(ctx context.Context, sessionID string, prompt
 	return c.promptWithBlocks(ctx, sessionID, prompt, 0)
 }
 
-func (c *Client) promptWithBlocks(
-	ctx context.Context,
-	sessionID string,
-	prompt []acp.ContentBlock,
-	promptLen int,
-) (<-chan ExtendedSessionNotification, <-chan PromptResult, error) {
+func (c *Client) promptWithBlocks(ctx context.Context, sessionID string, prompt []acp.ContentBlock, promptLen int) (<-chan ExtendedSessionNotification, <-chan PromptResult, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, nil, errSessionIDRequired
 	}
@@ -747,12 +713,17 @@ func (c *Client) promptWithBlocks(
 	promptBlocks := append([]acp.ContentBlock(nil), prompt...)
 	logEvent := l.Debug().
 		Str("acp_session_id", sessionID).
-		Str("prompt", renderACPContentBlocks(promptBlocks)).
 		Int("prompt_blocks", len(promptBlocks))
 	if promptLen > 0 {
 		logEvent = logEvent.Int("prompt_len", promptLen)
 	}
 	logEvent.Msg("sending acp session/prompt")
+	if l.enabled(levelTrace) {
+		l.Trace().
+			Str("acp_session_id", sessionID).
+			Str("prompt", renderACPContentBlocks(promptBlocks)).
+			Msg("sending acp session/prompt payload")
+	}
 
 	resultCh := make(chan PromptResult, 1)
 	go func() {
