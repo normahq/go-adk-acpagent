@@ -81,26 +81,17 @@ func mapACPLegacyUsageToUsageMetadata(usage map[string]any) *genai.GenerateConte
 	return m
 }
 
-func mapACPSessionUsageUpdateMetadata(update *acp.SessionUsageUpdate) map[string]any {
+func mapACPSessionUsageUpdateToUsageMetadata(update *acp.SessionUsageUpdate) *genai.GenerateContentResponseUsageMetadata {
 	if update == nil {
 		return nil
 	}
-	meta := map[string]any{
-		"size": update.Size,
-		"used": update.Used,
-	}
-	found := update.Size > 0 || update.Used > 0
-	if update.Cost != nil {
-		meta["cost"] = map[string]any{
-			"amount":   update.Cost.Amount,
-			"currency": update.Cost.Currency,
-		}
-		found = true
-	}
-	if !found {
+	if update.Size == 0 && update.Used == 0 {
 		return nil
 	}
-	return meta
+	return &genai.GenerateContentResponseUsageMetadata{
+		PromptTokenCount: int32(update.Size),
+		TotalTokenCount:  int32(update.Used),
+	}
 }
 
 func extractPromptText(content *genai.Content) string {
@@ -192,8 +183,8 @@ func mapACPLegacyUsageUpdate(ctx context.Context, logger logger, invocationID st
 }
 
 func mapACPSessionUsageUpdate(ctx context.Context, logger logger, invocationID string, update *acp.SessionUsageUpdate) (*session.Event, bool) {
-	metadata := mapACPSessionUsageUpdateMetadata(update)
-	if metadata == nil {
+	usage := mapACPSessionUsageUpdateToUsageMetadata(update)
+	if usage == nil {
 		logIgnoredACPUpdate(logger, acpUsageUpdate, map[string]any{
 			"size":   update.Size,
 			"used":   update.Used,
@@ -203,7 +194,7 @@ func mapACPSessionUsageUpdate(ctx context.Context, logger logger, invocationID s
 		return nil, false
 	}
 	ev := session.NewEvent(ctx, invocationID)
-	ev.CustomMetadata = map[string]any{SessionUsageMetadataKey: metadata}
+	ev.UsageMetadata = usage
 	ev.Partial = true
 	return ev, true
 }

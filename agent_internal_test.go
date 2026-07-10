@@ -257,19 +257,11 @@ func TestMapACPUpdateToEventIgnoredAndLegacyUsage(t *testing.T) {
 	if !ok {
 		t.Fatal("structured usage update ok = false, want true")
 	}
-	usageMeta, ok := ev.CustomMetadata[SessionUsageMetadataKey].(map[string]any)
-	if !ok {
-		t.Fatalf("structured usage CustomMetadata = %#v, want %q map", ev.CustomMetadata, SessionUsageMetadataKey)
+	if ev.UsageMetadata == nil {
+		t.Fatal("structured usage UsageMetadata = nil")
 	}
-	if got := usageMeta["size"]; got != 100 {
-		t.Fatalf("structured usage size = %#v, want 100", got)
-	}
-	if got := usageMeta["used"]; got != 25 {
-		t.Fatalf("structured usage used = %#v, want 25", got)
-	}
-	rawCost, ok := usageMeta["cost"].(map[string]any)
-	if !ok || rawCost["amount"] != 1.25 || rawCost["currency"] != "USD" {
-		t.Fatalf("structured usage cost = %#v, want amount/currency", usageMeta["cost"])
+	if ev.UsageMetadata.PromptTokenCount != 100 || ev.UsageMetadata.TotalTokenCount != 25 {
+		t.Fatalf("structured UsageMetadata = %#v", ev.UsageMetadata)
 	}
 	if !ev.Partial {
 		t.Fatal("structured usage event Partial = false, want true")

@@ -93,10 +93,10 @@ event:
 Legacy raw `usage_update` notifications with token counts are mapped to partial
 ADK events with `UsageMetadata`.
 
-Structured ACP `session/update.usage_update` notifications that report live
-context usage and cumulative session cost are mapped to partial ADK events with
-`event.CustomMetadata[acpagent.SessionUsageMetadataKey]` containing an object
-with `size`, `used`, and optional `cost`.
+Structured ACP `session/update.usage_update` notifications are also mapped to
+partial ADK events with `UsageMetadata`. The adapter projects `size` into
+`PromptTokenCount` and `used` into `TotalTokenCount` so the signal stays on the
+standard ADK usage lane.
 
 On every successful prompt, the adapter emits one final ADK event:
 
