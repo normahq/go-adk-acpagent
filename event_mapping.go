@@ -81,6 +81,28 @@ func mapACPLegacyUsageToUsageMetadata(usage map[string]any) *genai.GenerateConte
 	return m
 }
 
+func mapACPSessionUsageUpdateMetadata(update *acp.SessionUsageUpdate) map[string]any {
+	if update == nil {
+		return nil
+	}
+	meta := map[string]any{
+		"size": update.Size,
+		"used": update.Used,
+	}
+	found := update.Size > 0 || update.Used > 0
+	if update.Cost != nil {
+		meta["cost"] = map[string]any{
+			"amount":   update.Cost.Amount,
+			"currency": update.Cost.Currency,
+		}
+		found = true
+	}
+	if !found {
+		return nil
+	}
+	return meta
+}
+
 func extractPromptText(content *genai.Content) string {
 	if content == nil {
 		return ""
@@ -140,12 +162,7 @@ func mapACPUpdateToEvent(ctx context.Context, logger logger, invocationID string
 		})
 		return nil, false
 	case update.UsageUpdate != nil:
-		logIgnoredACPUpdate(logger, acpUsageUpdate, map[string]any{
-			"size": update.UsageUpdate.Size,
-			"used": update.UsageUpdate.Used,
-			"cost": update.UsageUpdate.Cost,
-		})
-		return nil, false
+		return mapACPSessionUsageUpdate(ctx, logger, invocationID, update.UsageUpdate)
 	default:
 		// Check for recognized discriminators in raw JSON that are not in the SDK struct.
 		var raw map[string]any
@@ -170,6 +187,23 @@ func mapACPLegacyUsageUpdate(ctx context.Context, logger logger, invocationID st
 	}
 	ev := session.NewEvent(ctx, invocationID)
 	ev.UsageMetadata = usage
+	ev.Partial = true
+	return ev, true
+}
+
+func mapACPSessionUsageUpdate(ctx context.Context, logger logger, invocationID string, update *acp.SessionUsageUpdate) (*session.Event, bool) {
+	metadata := mapACPSessionUsageUpdateMetadata(update)
+	if metadata == nil {
+		logIgnoredACPUpdate(logger, acpUsageUpdate, map[string]any{
+			"size":   update.Size,
+			"used":   update.Used,
+			"cost":   update.Cost,
+			"reason": "empty_session_usage",
+		})
+		return nil, false
+	}
+	ev := session.NewEvent(ctx, invocationID)
+	ev.CustomMetadata = map[string]any{SessionUsageMetadataKey: metadata}
 	ev.Partial = true
 	return ev, true
 }

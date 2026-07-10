@@ -69,6 +69,9 @@ const (
 	// event.Actions.StateDelta[PlanStateKey] as the authoritative full plan
 	// replacement snapshot.
 	PlanStateKey = "acp_plan"
+	// SessionUsageMetadataKey is the ADK event custom metadata key used for ACP
+	// session usage updates that describe live context usage and cumulative cost.
+	SessionUsageMetadataKey = "acp_session_usage"
 	// CWDStateKey is the ADK session-state key used to override the ACP
 	// session working directory for a single ADK session.
 	CWDStateKey = "cwd"

@@ -235,7 +235,6 @@ func TestMapACPUpdateToEventIgnoredAndLegacyUsage(t *testing.T) {
 		{CurrentModeUpdate: &acp.SessionCurrentModeUpdate{}},
 		{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{}},
 		{SessionInfoUpdate: &acp.SessionSessionInfoUpdate{}},
-		{UsageUpdate: &acp.SessionUsageUpdate{Size: 100, Used: 25}},
 	}
 	for i, update := range ignoredUpdates {
 		t.Run(fmt.Sprintf("ignored_%d", i), func(t *testing.T) {
@@ -247,7 +246,36 @@ func TestMapACPUpdateToEventIgnoredAndLegacyUsage(t *testing.T) {
 		})
 	}
 
-	ev, ok := mapACPUpdateToEvent(t.Context(), newLogger(nil, ""), "inv-usage", ExtendedSessionNotification{
+	cost := &acp.Cost{Amount: 1.25, Currency: "USD"}
+	ev, ok := mapACPUpdateToEvent(t.Context(), newLogger(nil, ""), "inv-structured-usage", ExtendedSessionNotification{
+		SessionNotification: acp.SessionNotification{Update: acp.SessionUpdate{UsageUpdate: &acp.SessionUsageUpdate{
+			Size: 100,
+			Used: 25,
+			Cost: cost,
+		}}},
+	})
+	if !ok {
+		t.Fatal("structured usage update ok = false, want true")
+	}
+	usageMeta, ok := ev.CustomMetadata[SessionUsageMetadataKey].(map[string]any)
+	if !ok {
+		t.Fatalf("structured usage CustomMetadata = %#v, want %q map", ev.CustomMetadata, SessionUsageMetadataKey)
+	}
+	if got := usageMeta["size"]; got != 100 {
+		t.Fatalf("structured usage size = %#v, want 100", got)
+	}
+	if got := usageMeta["used"]; got != 25 {
+		t.Fatalf("structured usage used = %#v, want 25", got)
+	}
+	rawCost, ok := usageMeta["cost"].(map[string]any)
+	if !ok || rawCost["amount"] != 1.25 || rawCost["currency"] != "USD" {
+		t.Fatalf("structured usage cost = %#v, want amount/currency", usageMeta["cost"])
+	}
+	if !ev.Partial {
+		t.Fatal("structured usage event Partial = false, want true")
+	}
+
+	ev, ok = mapACPUpdateToEvent(t.Context(), newLogger(nil, ""), "inv-usage", ExtendedSessionNotification{
 		SessionNotification: acp.SessionNotification{},
 		Raw:                 []byte(`{"update":{"sessionUpdate":"usage_update","inputTokens":7,"outputTokens":11,"totalTokens":18}}`),
 	})
