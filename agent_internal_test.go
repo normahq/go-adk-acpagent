@@ -749,6 +749,30 @@ func TestTerminalPromptErrorParsing(t *testing.T) {
 	if turnErr.Message != "bad" || turnErr.Code != "rate_limit" {
 		t.Fatalf("turn error = %#v, want bad/rate_limit", turnErr)
 	}
+	metaErr, ok := terminalPromptErrorFromPromptMeta(map[string]any{
+		"error": map[string]any{
+			"message": "quota exceeded",
+			"code":    "quota_exceeded",
+		},
+	})
+	if !ok {
+		t.Fatal("terminalPromptErrorFromPromptMeta(message/code) ok = false, want true")
+	}
+	if metaErr.Message != "quota exceeded" || metaErr.Code != "quota_exceeded" {
+		t.Fatalf("terminalPromptErrorFromPromptMeta(message/code) = %#v, want quota exceeded/quota_exceeded", metaErr)
+	}
+	fallbackErr, ok := terminalPromptErrorFromPromptMeta(map[string]any{
+		"error": map[string]any{
+			"additionalDetails": "billing required",
+			"kind":              "payment_required",
+		},
+	})
+	if !ok {
+		t.Fatal("terminalPromptErrorFromPromptMeta(additionalDetails/kind) ok = false, want true")
+	}
+	if fallbackErr.Message != "billing required" || fallbackErr.Code != "payment_required" {
+		t.Fatalf("terminalPromptErrorFromPromptMeta(additionalDetails/kind) = %#v, want billing required/payment_required", fallbackErr)
+	}
 	if got, ok := newTerminalPromptError("", nil, ""); ok || got != nil {
 		t.Fatalf("newTerminalPromptError(empty) = (%#v, %v), want nil false", got, ok)
 	}

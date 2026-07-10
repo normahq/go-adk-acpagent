@@ -301,6 +301,11 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		} else if result.terminalError != nil {
 			ev.ErrorMessage = result.terminalError.Message
 			ev.ErrorCode = result.terminalError.Code
+		} else if result.promptResult != nil && ev.ErrorMessage == "" {
+			if promptMetaErr, ok := terminalPromptErrorFromPromptMeta(result.promptResult.Response.Meta); ok {
+				ev.ErrorMessage = promptMetaErr.Message
+				ev.ErrorCode = promptMetaErr.Code
+			}
 		}
 		if result.latestPlanSnapshot != nil {
 			ev.Actions.StateDelta[PlanStateKey] = result.latestPlanSnapshot

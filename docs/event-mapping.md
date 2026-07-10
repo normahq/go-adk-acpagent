@@ -104,6 +104,8 @@ On every successful prompt, the adapter emits one final ADK event:
 - `FinishReason` is copied from the ACP stop reason when available.
 - final visible output becomes model text content when present.
 - terminal provider failures become `ErrorCode` and `ErrorMessage`.
+- terminal prompt-result `_meta.error` payloads are also projected into
+  `ErrorCode` and `ErrorMessage` when the prompt ends without visible output.
 - `SessionStateKey` is updated with the current ACP session binding and config
   values.
 - `OutputKey`, when configured, stores the final visible output in event state.

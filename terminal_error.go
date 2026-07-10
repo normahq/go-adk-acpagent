@@ -60,6 +60,28 @@ func parseTurnCompletedTerminalError(raw json.RawMessage) (*terminalPromptError,
 	return newTerminalPromptError(payload.Turn.Error.Message, payload.Turn.Error.CodexErrorInfo, payload.Turn.Error.AdditionalDetails)
 }
 
+func terminalPromptErrorFromPromptMeta(meta map[string]any) (*terminalPromptError, bool) {
+	if len(meta) == 0 {
+		return nil, false
+	}
+	errMeta, ok := meta["error"].(map[string]any)
+	if !ok || len(errMeta) == 0 {
+		return nil, false
+	}
+	return terminalPromptErrorFromMap(errMeta)
+}
+
+func terminalPromptErrorFromMap(errMeta map[string]any) (*terminalPromptError, bool) {
+	if len(errMeta) == 0 {
+		return nil, false
+	}
+	return newTerminalPromptError(
+		terminalPromptErrorStringValue(errMeta["message"]),
+		terminalPromptErrorCodeValue(errMeta),
+		terminalPromptErrorStringValue(errMeta["additionalDetails"]),
+	)
+}
+
 func newTerminalPromptError(message string, code any, additionalDetails string) (*terminalPromptError, bool) {
 	msg := strings.TrimSpace(message)
 	if msg == "" {
@@ -76,6 +98,27 @@ func newTerminalPromptError(message string, code any, additionalDetails string) 
 		Message: msg,
 		Code:    errCode,
 	}, true
+}
+
+func terminalPromptErrorStringValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
+}
+
+func terminalPromptErrorCodeValue(errMeta map[string]any) any {
+	if len(errMeta) == 0 {
+		return nil
+	}
+	for _, key := range []string{"code", "kind", "type", "codexErrorInfo"} {
+		if value, ok := errMeta[key]; ok {
+			if text := strings.TrimSpace(stringifyTerminalErrorCode(value)); text != "" {
+				return value
+			}
+		}
+	}
+	return nil
 }
 
 func stringifyTerminalErrorCode(code any) string {

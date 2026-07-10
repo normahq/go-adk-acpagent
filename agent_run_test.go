@@ -950,6 +950,49 @@ func TestAgentRunTurnCompleteIncludesTerminalProviderErrorWithoutVisibleReply(t 
 	}
 }
 
+func TestAgentRunTurnCompleteIncludesPromptMetaTerminalErrorWithoutVisibleReply(t *testing.T) {
+	a, err := NewWithContext(t.Context(), Config{
+		Command:    helperCommand(t),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+
+	sessionService := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{
+		AppName:        "test-app",
+		Agent:          a,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	sess, err := sessionService.Create(t.Context(), &session.CreateRequest{AppName: "test-app", UserID: "test-user"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	finalEvent := collectFinalEvent(t, r.Run(
+		t.Context(),
+		"test-user",
+		sess.Session.ID(),
+		genai.NewContentFromText("terminal-meta-error", genai.RoleUser),
+		agent.RunConfig{},
+	))
+
+	if finalEvent.Content != nil {
+		t.Fatalf("final content = %v, want nil", finalEvent.Content)
+	}
+	if got := finalEvent.ErrorMessage; got != "quota exceeded for this account" {
+		t.Fatalf("error message = %q, want prompt meta terminal error", got)
+	}
+	if got := finalEvent.ErrorCode; got != "quota_exceeded" {
+		t.Fatalf("error code = %q, want quota_exceeded", got)
+	}
+}
+
 func TestAgentRunIgnoresRetryOnlyErrorsWhenTurnLaterSucceeds(t *testing.T) {
 	a, err := NewWithContext(t.Context(), Config{
 		Command:    helperCommand(t),

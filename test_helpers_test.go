@@ -574,6 +574,19 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperPromptResponse{StopReason: string(acp.StopReasonEndTurn)})})
 				continue
 			}
+			if responsePrompt == "terminal-meta-error" {
+				writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperPromptResponse{
+					StopReason: string(acp.StopReasonEndTurn),
+					Meta: map[string]any{
+						"error": map[string]any{
+							"message":           "quota exceeded for this account",
+							"code":              "quota_exceeded",
+							"additionalDetails": "provider rejected the request before producing a reply",
+						},
+					},
+				})})
+				continue
+			}
 			if responsePrompt == "retry-then-success" {
 				writePromptErrorNotification(stdout, req.SessionID, "Reconnecting... 1/5", true)
 				writePromptErrorNotification(stdout, req.SessionID, "Reconnecting... 2/5", true)
@@ -769,7 +782,8 @@ type helperSessionRestoreResponse struct {
 }
 
 type helperPromptResponse struct {
-	StopReason string `json:"stopReason"`
+	StopReason string         `json:"stopReason"`
+	Meta       map[string]any `json:"_meta,omitempty"`
 }
 
 type helperSetSessionConfigOptionRequest struct {
