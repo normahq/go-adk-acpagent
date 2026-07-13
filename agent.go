@@ -296,12 +296,13 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			ev.UsageMetadata = mapACPUsageToUsageMetadata(result.promptResult.Usage)
 			copyACPProviderErrorMetadata(ev, result.promptResult.Response.Meta)
 		}
-		if result.finalOutput != "" {
+		switch {
+		case result.finalOutput != "":
 			ev.Content = genai.NewContentFromText(result.finalOutput, genai.RoleModel)
-		} else if result.terminalError != nil {
+		case result.terminalError != nil:
 			ev.ErrorMessage = result.terminalError.Message
 			ev.ErrorCode = result.terminalError.Code
-		} else if result.promptResult != nil && ev.ErrorMessage == "" {
+		case result.promptResult != nil && ev.ErrorMessage == "":
 			if promptMetaErr, ok := terminalPromptErrorFromPromptMeta(result.promptResult.Response.Meta); ok {
 				ev.ErrorMessage = promptMetaErr.Message
 				ev.ErrorCode = promptMetaErr.Code
