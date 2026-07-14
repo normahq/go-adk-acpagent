@@ -168,12 +168,14 @@ func TestClientCreateSessionSetsConfigValue(t *testing.T) {
 	}
 }
 
-func TestClientCreateSessionFailsOnSetConfigOptionUnsupported(t *testing.T) {
+func TestClientCreateSessionWarnsOnSetConfigOptionUnsupported(t *testing.T) {
+	var logBuf testLogBuffer
 	client, err := NewClient(t.Context(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
 			"GO_DISABLE_SET_CONFIG_OPTION": "1",
 			"GO_EXPECT_SESSION_MODEL":      "openai/gpt-5.4",
 		}),
+		Logger: testSlogLogger(&logBuf, slog.LevelWarn),
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
@@ -183,8 +185,33 @@ func TestClientCreateSessionFailsOnSetConfigOptionUnsupported(t *testing.T) {
 	if _, err := client.Initialize(t.Context()); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	if _, err := client.CreateSession(t.Context(), t.TempDir(), []SessionConfigValue{{ID: "model", Value: "openai/gpt-5.4"}}, nil); err == nil {
-		t.Fatal("CreateSession() error = nil, want set config option error")
+	if _, err := client.CreateSession(t.Context(), t.TempDir(), []SessionConfigValue{{ID: "model", Value: "openai/gpt-5.4"}}, nil); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	if got := logBuf.String(); !strings.Contains(got, "session/set_config_option unsupported") {
+		t.Fatalf("warn log = %q", got)
+	}
+}
+
+func TestClientCreateSessionWarnsOnUnavailableConfigOption(t *testing.T) {
+	var logBuf testLogBuffer
+	client, err := NewClient(t.Context(), ClientConfig{
+		Command: helperCommand(t),
+		Logger:  testSlogLogger(&logBuf, slog.LevelWarn),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer closeTestCloser(t, client)
+
+	if _, err := client.Initialize(t.Context()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	if _, err := client.CreateSession(t.Context(), t.TempDir(), []SessionConfigValue{{ID: "reasoning_effort", Value: "high"}}, nil); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	if got := logBuf.String(); !strings.Contains(got, "config option unavailable") || !strings.Contains(got, "reasoning_effort") {
+		t.Fatalf("warn log = %q", got)
 	}
 }
 
@@ -304,11 +331,13 @@ func TestClientCreateSessionSetsBooleanConfigOption(t *testing.T) {
 }
 
 func TestClientCreateSessionIgnoresSetModeUnsupported(t *testing.T) {
+	var logBuf testLogBuffer
 	client, err := NewClient(t.Context(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
 			"GO_DISABLE_SET_MODE":    "1",
 			"GO_EXPECT_SESSION_MODE": "code",
 		}),
+		Logger: testSlogLogger(&logBuf, slog.LevelWarn),
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
@@ -324,6 +353,9 @@ func TestClientCreateSessionIgnoresSetModeUnsupported(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(sess.SessionId)); got == "" {
 		t.Fatal("CreateSession() returned empty session id")
+	}
+	if got := logBuf.String(); !strings.Contains(got, "session/set_mode unsupported") {
+		t.Fatalf("warn log = %q", got)
 	}
 }
 

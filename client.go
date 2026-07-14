@@ -464,6 +464,13 @@ func (c *Client) applySessionConfig(ctx context.Context, sessionID string, value
 			}
 			resp, err := c.SetSessionConfigOption(ctx, req)
 			if err != nil {
+				if isACPMethodNotFoundError(err) {
+					l.Warn().
+						Str("acp_session_id", sessionID).
+						Str("config_option", optionID).
+						Msg("acp session/set_config_option unsupported; continuing")
+					continue
+				}
 				return nil, fmt.Errorf("set acp session config option %q: %w", optionID, err)
 			}
 			currentOptions = resp.ConfigOptions
@@ -476,7 +483,7 @@ func (c *Client) applySessionConfig(ctx context.Context, sessionID string, value
 			}
 			if err := c.SetSessionMode(ctx, sessionID, optionValue); err != nil {
 				if isACPMethodNotFoundError(err) {
-					l.Debug().
+					l.Warn().
 						Str("acp_session_id", sessionID).
 						Str("mode", optionValue).
 						Msg("acp session/set_mode unsupported; continuing")
@@ -487,7 +494,10 @@ func (c *Client) applySessionConfig(ctx context.Context, sessionID string, value
 			modes.CurrentModeId = acp.SessionModeId(optionValue)
 			continue
 		}
-		return nil, fmt.Errorf("acp session config option %q is not available", optionID)
+		l.Warn().
+			Str("acp_session_id", sessionID).
+			Str("config_option", optionID).
+			Msg("acp session config option unavailable; continuing")
 	}
 	return collectSessionConfigValues(currentOptions, modes), nil
 }
