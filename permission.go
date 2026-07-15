@@ -35,6 +35,26 @@ type PermissionLocation struct {
 	Line *int
 }
 
+// PermissionDetailKind identifies a user-relevant detail of the requested
+// action without exposing the backing provider's raw input schema.
+type PermissionDetailKind string
+
+const (
+	// PermissionDetailKindReason explains why the action was requested.
+	PermissionDetailKindReason PermissionDetailKind = "reason"
+	// PermissionDetailKindCommand is a command the action intends to run.
+	PermissionDetailKindCommand PermissionDetailKind = "command"
+	// PermissionDetailKindWorkingDirectory is the action's working directory.
+	PermissionDetailKindWorkingDirectory PermissionDetailKind = "working_directory"
+)
+
+// PermissionDetail is a normalized, display-safe detail of a requested
+// action. Applications may render these fields without understanding RawInput.
+type PermissionDetail struct {
+	Kind  PermissionDetailKind
+	Value string
+}
+
 // PermissionToolCall describes the action that requires authorization.
 type PermissionToolCall struct {
 	ID        string
@@ -42,6 +62,7 @@ type PermissionToolCall struct {
 	Kind      string
 	RawInput  any
 	Locations []PermissionLocation
+	Details   []PermissionDetail
 }
 
 // PermissionRequest is the ADK-facing representation of an agent request to
@@ -106,9 +127,29 @@ func permissionRequestFromProtocol(request acp.RequestPermissionRequest) Permiss
 			Kind:      kind,
 			RawInput:  request.ToolCall.RawInput,
 			Locations: locations,
+			Details:   permissionDetails(request.ToolCall.RawInput),
 		},
 		Options: options,
 	}
+}
+
+func permissionDetails(rawInput any) []PermissionDetail {
+	input, ok := rawInput.(map[string]any)
+	if !ok {
+		return nil
+	}
+	details := make([]PermissionDetail, 0, 3)
+	appendStringDetail := func(kind PermissionDetailKind, key string) {
+		value, ok := input[key].(string)
+		value = strings.TrimSpace(value)
+		if ok && value != "" {
+			details = append(details, PermissionDetail{Kind: kind, Value: value})
+		}
+	}
+	appendStringDetail(PermissionDetailKindReason, "reason")
+	appendStringDetail(PermissionDetailKindCommand, "command")
+	appendStringDetail(PermissionDetailKindWorkingDirectory, "cwd")
+	return details
 }
 
 func protocolRequestHasOption(request acp.RequestPermissionRequest, optionID string) bool {

@@ -64,6 +64,9 @@ Protocol permission callbacks are translated before application policy runs:
 
 - tool call ID, title, kind, raw input, and locations become
   `PermissionToolCall`;
+- common user-facing fields such as reason, command, and working directory are
+  normalized into `PermissionDetail` values so application renderers do not
+  need to parse the backing protocol's raw input schema;
 - offered IDs, names, and allow/reject lifetimes become `PermissionOption`;
 - the application returns a transport-neutral `PermissionDecision`;
 - the adapter validates that the selected option was offered and maps unknown
