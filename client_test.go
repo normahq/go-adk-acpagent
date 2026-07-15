@@ -1046,3 +1046,33 @@ func TestRequestPermissionPassesContextToHandler(t *testing.T) {
 		t.Fatalf("permission handler context value = %q, want %q", seen, ctxVal)
 	}
 }
+
+func TestRequestPermissionUsesActivePromptContext(t *testing.T) {
+	type key string
+	const ctxKey key = "ctx-key"
+
+	var seen string
+	c := &Client{
+		logger: newLogger(nil, ""),
+		activeBySession: map[acp.SessionId]*activePrompt{
+			"session-1": {
+				sessionID: "session-1",
+				logger:    newLogger(nil, "").withContext(context.WithValue(t.Context(), ctxKey, "prompt-context")),
+			},
+		},
+		permissionHandler: func(ctx context.Context, _ acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+			seen, _ = ctx.Value(ctxKey).(string)
+			return acp.RequestPermissionResponse{Outcome: acp.NewRequestPermissionOutcomeCancelled()}, nil
+		},
+	}
+
+	_, err := c.RequestPermission(context.WithValue(t.Context(), ctxKey, "callback-context"), acp.RequestPermissionRequest{
+		SessionId: "session-1",
+	})
+	if err != nil {
+		t.Fatalf("RequestPermission() error = %v", err)
+	}
+	if seen != "prompt-context" {
+		t.Fatalf("handler context value = %q, want prompt-context", seen)
+	}
+}

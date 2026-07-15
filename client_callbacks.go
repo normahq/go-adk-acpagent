@@ -8,7 +8,7 @@ import (
 
 // RequestPermission handles ACP permission requests from the server.
 func (c *Client) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	l := c.loggerForContext(ctx)
+	handlerCtx, l := c.permissionContext(ctx, params.SessionId)
 	title := ""
 	if params.ToolCall.Title != nil {
 		title = *params.ToolCall.Title
@@ -20,7 +20,7 @@ func (c *Client) RequestPermission(ctx context.Context, params acp.RequestPermis
 		Msg("received acp permission request")
 
 	if c.permissionHandler != nil {
-		resp, err := c.permissionHandler(ctx, params)
+		resp, err := c.permissionHandler(handlerCtx, params)
 		if err != nil {
 			return acp.RequestPermissionResponse{}, err
 		}
@@ -46,6 +46,16 @@ func (c *Client) RequestPermission(ctx context.Context, params acp.RequestPermis
 	resp := acp.RequestPermissionResponse{Outcome: acp.NewRequestPermissionOutcomeCancelled()}
 	l.Debug().Str("acp_session_id", string(params.SessionId)).Msg("permission auto-cancelled")
 	return resp, nil
+}
+
+func (c *Client) permissionContext(fallback context.Context, sessionID acp.SessionId) (context.Context, logger) {
+	c.stateMu.Lock()
+	active := c.activeBySession[sessionID]
+	c.stateMu.Unlock()
+	if active == nil || active.logger.ctx == nil {
+		return fallback, c.loggerForContext(fallback)
+	}
+	return active.logger.ctx, active.logger
 }
 
 // SessionUpdate is part of the ACP client callback contract.

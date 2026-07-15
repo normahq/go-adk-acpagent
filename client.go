@@ -42,6 +42,8 @@ type promptContextKey string
 const suppressLastChunkLogContextKey promptContextKey = "acpagent.suppress_last_chunk_log"
 
 // PermissionHandler decides how ACP permission requests should be handled.
+// During an active prompt, ctx is the context passed to Prompt or
+// PromptWithContent for the request's ACP session.
 // It returns a response with the selected outcome or an error if the request
 // could not be processed.
 type PermissionHandler func(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
