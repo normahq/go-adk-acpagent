@@ -35,24 +35,28 @@ type PermissionLocation struct {
 	Line *int
 }
 
-// PermissionDetailKind identifies a user-relevant detail of the requested
-// action without exposing the backing provider's raw input schema.
-type PermissionDetailKind string
+// PermissionContentKind identifies structured content attached to the tool
+// action requiring authorization.
+type PermissionContentKind string
 
 const (
-	// PermissionDetailKindReason explains why the action was requested.
-	PermissionDetailKindReason PermissionDetailKind = "reason"
-	// PermissionDetailKindCommand is a command the action intends to run.
-	PermissionDetailKindCommand PermissionDetailKind = "command"
-	// PermissionDetailKindWorkingDirectory is the action's working directory.
-	PermissionDetailKindWorkingDirectory PermissionDetailKind = "working_directory"
+	// PermissionContentKindText contains a human-readable text content block.
+	PermissionContentKindText PermissionContentKind = "text"
+	// PermissionContentKindDiff contains a structured file change.
+	PermissionContentKindDiff PermissionContentKind = "diff"
+	// PermissionContentKindTerminal references an attached terminal.
+	PermissionContentKindTerminal PermissionContentKind = "terminal"
 )
 
-// PermissionDetail is a normalized, display-safe detail of a requested
-// action. Applications may render these fields without understanding RawInput.
-type PermissionDetail struct {
-	Kind  PermissionDetailKind
-	Value string
+// PermissionContent is the ADK-facing representation of a structured tool
+// call content block. Fields are populated according to Kind.
+type PermissionContent struct {
+	Kind       PermissionContentKind
+	Text       string
+	Path       string
+	OldText    *string
+	NewText    string
+	TerminalID string
 }
 
 // PermissionToolCall describes the action that requires authorization.
@@ -62,7 +66,7 @@ type PermissionToolCall struct {
 	Kind      string
 	RawInput  any
 	Locations []PermissionLocation
-	Details   []PermissionDetail
+	Content   []PermissionContent
 }
 
 // PermissionRequest is the ADK-facing representation of an agent request to
@@ -127,29 +131,36 @@ func permissionRequestFromProtocol(request acp.RequestPermissionRequest) Permiss
 			Kind:      kind,
 			RawInput:  request.ToolCall.RawInput,
 			Locations: locations,
-			Details:   permissionDetails(request.ToolCall.RawInput),
+			Content:   permissionContentFromProtocol(request.ToolCall.Content),
 		},
 		Options: options,
 	}
 }
 
-func permissionDetails(rawInput any) []PermissionDetail {
-	input, ok := rawInput.(map[string]any)
-	if !ok {
-		return nil
-	}
-	details := make([]PermissionDetail, 0, 3)
-	appendStringDetail := func(kind PermissionDetailKind, key string) {
-		value, ok := input[key].(string)
-		value = strings.TrimSpace(value)
-		if ok && value != "" {
-			details = append(details, PermissionDetail{Kind: kind, Value: value})
+func permissionContentFromProtocol(content []acp.ToolCallContent) []PermissionContent {
+	result := make([]PermissionContent, 0, len(content))
+	for _, item := range content {
+		switch {
+		case item.Content != nil && item.Content.Content.Text != nil:
+			result = append(result, PermissionContent{
+				Kind: PermissionContentKindText,
+				Text: strings.TrimSpace(item.Content.Content.Text.Text),
+			})
+		case item.Diff != nil:
+			result = append(result, PermissionContent{
+				Kind:    PermissionContentKindDiff,
+				Path:    strings.TrimSpace(item.Diff.Path),
+				OldText: item.Diff.OldText,
+				NewText: item.Diff.NewText,
+			})
+		case item.Terminal != nil:
+			result = append(result, PermissionContent{
+				Kind:       PermissionContentKindTerminal,
+				TerminalID: strings.TrimSpace(item.Terminal.TerminalId),
+			})
 		}
 	}
-	appendStringDetail(PermissionDetailKindReason, "reason")
-	appendStringDetail(PermissionDetailKindCommand, "command")
-	appendStringDetail(PermissionDetailKindWorkingDirectory, "cwd")
-	return details
+	return result
 }
 
 func protocolRequestHasOption(request acp.RequestPermissionRequest, optionID string) bool {

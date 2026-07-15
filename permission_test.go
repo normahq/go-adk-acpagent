@@ -18,11 +18,13 @@ func TestProtocolPermissionHandlerMapsGenericRequestAndDecision(t *testing.T) {
 		return PermissionDecision{OptionID: "reject"}, nil
 	})
 	response, err := handler(context.Background(), acp.RequestPermissionRequest{
-		ToolCall: acp.ToolCallUpdate{ToolCallId: "call-1", Title: &title, Kind: &kind, RawInput: map[string]any{
-			"reason":  "Check the current directory",
-			"command": "pwd",
-			"cwd":     "/workspace",
-		}},
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallId: "call-1",
+			Title:      &title,
+			Kind:       &kind,
+			RawInput:   map[string]any{"command": "pwd"},
+			Content:    []acp.ToolCallContent{acp.ToolContent(acp.TextBlock("Run `pwd` in `/workspace`."))},
+		},
 		Options: []acp.PermissionOption{
 			{OptionId: "allow", Name: "Allow", Kind: acp.PermissionOptionKindAllowOnce},
 			{OptionId: "reject", Name: "Reject", Kind: acp.PermissionOptionKindRejectOnce},
@@ -37,28 +39,14 @@ func TestProtocolPermissionHandlerMapsGenericRequestAndDecision(t *testing.T) {
 	if len(got.Options) != 2 || got.Options[0].Kind != PermissionOptionKindAllowOnce {
 		t.Fatalf("options = %+v", got.Options)
 	}
-	wantDetails := []PermissionDetail{
-		{Kind: PermissionDetailKindReason, Value: "Check the current directory"},
-		{Kind: PermissionDetailKindCommand, Value: "pwd"},
-		{Kind: PermissionDetailKindWorkingDirectory, Value: "/workspace"},
+	wantContent := []PermissionContent{
+		{Kind: PermissionContentKindText, Text: "Run `pwd` in `/workspace`."},
 	}
-	if !reflect.DeepEqual(got.ToolCall.Details, wantDetails) {
-		t.Fatalf("details = %+v, want %+v", got.ToolCall.Details, wantDetails)
+	if !reflect.DeepEqual(got.ToolCall.Content, wantContent) {
+		t.Fatalf("content = %+v, want %+v", got.ToolCall.Content, wantContent)
 	}
 	if response.Outcome.Selected == nil || response.Outcome.Selected.OptionId != "reject" {
 		t.Fatalf("outcome = %+v", response.Outcome)
-	}
-}
-
-func TestPermissionDetailsIgnoresUnknownAndNonStringInput(t *testing.T) {
-	got := permissionDetails(map[string]any{
-		"command":  []string{"go", "test"},
-		"cwd":      "  /workspace  ",
-		"threadId": "internal-id",
-	})
-	want := []PermissionDetail{{Kind: PermissionDetailKindWorkingDirectory, Value: "/workspace"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("permissionDetails() = %+v, want %+v", got, want)
 	}
 }
 
