@@ -46,10 +46,8 @@ Provide `Config.PermissionHandler`. Without a handler, permission requests are
 rejected by the adapter.
 
 ```go
-PermissionHandler: func(ctx context.Context, req acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	return acp.RequestPermissionResponse{
-		Outcome: acp.NewRequestPermissionOutcomeCancelled(),
-	}, nil
+PermissionHandler: func(ctx context.Context, req acpagent.PermissionRequest) (acpagent.PermissionDecision, error) {
+	return acpagent.PermissionDecision{Canceled: true}, nil
 },
 ```
 

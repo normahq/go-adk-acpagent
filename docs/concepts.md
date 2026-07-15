@@ -20,7 +20,8 @@ The package handles:
   prompt update dispatch.
 - ADK event mapping for text, thoughts, tool calls, usage, plan updates, and
   provider errors.
-- ACP permission callbacks through `PermissionHandler`.
+- permission callbacks mapped into the ADK-facing `PermissionRequest` and
+  `PermissionDecision` contract used by `PermissionHandler`.
 - Optional session configuration through ACP session config options.
 - Optional MCP server forwarding to ACP `session/new` and `session/resume`.
 

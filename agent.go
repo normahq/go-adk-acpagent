@@ -67,7 +67,7 @@ type Config struct {
 	WorkingDir string
 	// Stderr is an optional writer for the ACP subprocess's standard error.
 	Stderr io.Writer
-	// PermissionHandler decides how to respond to ACP permission requests.
+	// PermissionHandler decides generic agent permission requests at the ADK boundary.
 	PermissionHandler PermissionHandler
 	// Logger is the slog logger to use for this agent.
 	// Trace-level records can contain complete ACP payloads and other sensitive
@@ -180,7 +180,7 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 		ClientName:        cfg.ClientName,
 		ClientVersion:     cfg.ClientVersion,
 		Stderr:            cfg.Stderr,
-		PermissionHandler: cfg.PermissionHandler,
+		PermissionHandler: protocolPermissionHandler(cfg.PermissionHandler),
 		Logger:            cfg.Logger,
 	})
 	if err != nil {

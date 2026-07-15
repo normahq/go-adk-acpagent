@@ -41,12 +41,11 @@ type promptContextKey string
 
 const suppressLastChunkLogContextKey promptContextKey = "acpagent.suppress_last_chunk_log"
 
-// PermissionHandler decides how ACP permission requests should be handled.
+// ProtocolPermissionHandler handles raw ACP permission callbacks for the
+// low-level Client API.
 // During an active prompt, ctx is the context passed to Prompt or
 // PromptWithContent for the request's ACP session.
-// It returns a response with the selected outcome or an error if the request
-// could not be processed.
-type PermissionHandler func(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+type ProtocolPermissionHandler func(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
 
 // ClientConfig configures an ACP subprocess client.
 type ClientConfig struct {
@@ -63,7 +62,7 @@ type ClientConfig struct {
 	// Stderr is an optional writer for the ACP subprocess's standard error.
 	Stderr io.Writer
 	// PermissionHandler decides how to respond to ACP permission requests.
-	PermissionHandler PermissionHandler
+	PermissionHandler ProtocolPermissionHandler
 	// Logger is the slog logger to use for this client.
 	// Trace-level records can contain complete ACP payloads and other sensitive
 	// content.
@@ -88,7 +87,7 @@ type Client struct {
 	cmd               *exec.Cmd
 	stdin             io.WriteCloser
 	conn              *acp.ClientSideConnection
-	permissionHandler PermissionHandler
+	permissionHandler ProtocolPermissionHandler
 	clientName        string
 	clientVersion     string
 	logger            logger

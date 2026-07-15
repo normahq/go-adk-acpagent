@@ -58,6 +58,20 @@ ACP `tool_call_update` updates become ADK function-response parts:
 Pending and in-progress tool statuses are also reported through
 `event.LongRunningToolIDs`.
 
+## Permission Requests
+
+Protocol permission callbacks are translated before application policy runs:
+
+- tool call ID, title, kind, raw input, and locations become
+  `PermissionToolCall`;
+- offered IDs, names, and allow/reject lifetimes become `PermissionOption`;
+- the application returns a transport-neutral `PermissionDecision`;
+- the adapter validates that the selected option was offered and maps unknown
+  selections to cancellation.
+
+The handler receives the active ADK runner context. Applications do not need
+to import the protocol SDK to review permissions.
+
 ## State Updates
 
 ACP `plan` updates do not produce content parts. They produce partial ADK

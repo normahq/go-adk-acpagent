@@ -27,7 +27,7 @@ want to run is exposed as an ACP command.
 | ACP lifecycle | Starts one ACP subprocess per agent instance and closes it on shutdown. |
 | Session binding | Creates, stores, reuses, and resumes ACP sessions through ADK session state. |
 | Event mapping | Converts ACP updates into ADK events and state deltas. |
-| Permissions | Routes ACP permission requests through `PermissionHandler`. |
+| Permissions | Maps protocol callbacks into ADK-facing `PermissionRequest` values handled by `PermissionHandler`. |
 | Session config | Applies ACP session-bound values such as model, mode, or thought level. |
 | MCP forwarding | Sends configured MCP servers to ACP session creation and resume calls. |
 | Diagnostics | Uses `*slog.Logger` for adapter logs and a separate writer for provider stderr. |
@@ -97,7 +97,7 @@ Runnable examples are available for [OpenCode](examples/opencode),
 | `WorkingDir` | Process directory and default ACP session cwd. |
 | `Logger` | Adapter diagnostics through `*slog.Logger`. |
 | `Stderr` | ACP subprocess stderr forwarding. |
-| `PermissionHandler` | Application decision point for ACP permission requests. |
+| `PermissionHandler` | Application decision point for generic agent permission requests. |
 | `SessionConfig` | ACP session config values applied through `session/set_config_option`. |
 | `MCPServers` | MCP servers forwarded to ACP sessions. |
 | `Instruction` / `GlobalInstruction` | ADK-style instructions prepended to prompts. |
