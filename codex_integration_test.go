@@ -5,6 +5,7 @@ package acpagent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"os/exec"
@@ -76,6 +77,25 @@ func TestCodexACPIntegration_ResumeSessionRoundTrip(t *testing.T) {
 	}
 
 	sess := mustNewCodexACPSession(t, client, stderr, workingDir)
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(t.Context(), codexIntegrationTimeout)
+	updates, resultCh, err := client.Prompt(bootstrapCtx, string(sess.SessionId), "Reply with one short word.")
+	if err != nil {
+		bootstrapCancel()
+		failCodexWithDetails(t, "bootstrap session/prompt failed to start", err, stderr.String())
+	}
+	for range updates {
+	}
+	result := <-resultCh
+	bootstrapCancel()
+	if result.Err != nil {
+		failCodexWithDetails(t, "bootstrap session/prompt returned error", result.Err, stderr.String())
+	}
+	closeTestCloser(t, client)
+
+	// Resume is a reconnect operation. A live bridge correctly rejects resume
+	// for a session it already owns, so exercise it through a fresh process.
+	client, stderr = newCodexACPClient(t, workingDir)
+	_ = mustInitializeCodexACP(t, client, stderr)
 
 	ctx, cancel := context.WithTimeout(t.Context(), codexIntegrationTimeout)
 	defer cancel()
@@ -85,7 +105,7 @@ func TestCodexACPIntegration_ResumeSessionRoundTrip(t *testing.T) {
 		failCodexWithDetails(t, "session/resume failed", err, stderr.String())
 	}
 
-	updates, resultCh, err := client.Prompt(ctx, string(sess.SessionId), "Reply with one short word.")
+	updates, resultCh, err = client.Prompt(ctx, string(sess.SessionId), "Reply with one short word.")
 	if err != nil {
 		failCodexWithDetails(t, "session/prompt failed to start after session/resume", err, stderr.String())
 	}
@@ -94,7 +114,7 @@ func TestCodexACPIntegration_ResumeSessionRoundTrip(t *testing.T) {
 	for range updates {
 		updatesSeen++
 	}
-	result := <-resultCh
+	result = <-resultCh
 	if result.Err != nil {
 		failCodexWithDetails(t, "session/prompt returned error after session/resume", result.Err, stderr.String())
 	}
@@ -173,6 +193,68 @@ func TestCodexACPIntegration_AgentRun(t *testing.T) {
 	}
 }
 
+func TestCodexACPIntegration_AgentRunWithImage(t *testing.T) {
+	workingDir := requireCodexEnvironment(t)
+
+	var stderr bytes.Buffer
+	agentWithCodex, err := NewWithContext(t.Context(), Config{
+		Command:    codexACPCommand(),
+		WorkingDir: workingDir,
+		Stderr:     &stderr,
+	})
+	if err != nil {
+		maybeSkipCodexIntegration(t, err, stderr.String())
+		failCodexWithDetails(t, "acpagent.New failed", err, stderr.String())
+	}
+	defer closeTestCloser(t, agentWithCodex)
+
+	sessionService := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{
+		AppName:        "codex-acp-image-integration",
+		Agent:          agentWithCodex,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	sess, err := sessionService.Create(t.Context(), &session.CreateRequest{
+		AppName: "codex-acp-image-integration",
+		UserID:  "integration-user",
+	})
+	if err != nil {
+		t.Fatalf("session.Create() error = %v", err)
+	}
+	image, err := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+	)
+	if err != nil {
+		t.Fatalf("decode fixture image: %v", err)
+	}
+	content := &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{
+			genai.NewPartFromText("Acknowledge that you received an image in one short sentence."),
+			genai.NewPartFromBytes(image, "image/png"),
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), codexIntegrationTimeout)
+	defer cancel()
+	finalText := ""
+	for ev, runErr := range r.Run(ctx, "integration-user", sess.Session.ID(), content, adkagent.RunConfig{}) {
+		if runErr != nil {
+			maybeSkipCodexIntegration(t, runErr, stderr.String())
+			failCodexWithDetails(t, "runner.Run with image failed", runErr, stderr.String())
+		}
+		if ev != nil && ev.TurnComplete {
+			finalText = strings.TrimSpace(extractPromptText(ev.Content))
+		}
+	}
+	if finalText == "" {
+		failCodexWithDetails(t, "runner.Run with image produced no final text", nil, stderr.String())
+	}
+}
+
 func requireCodexEnvironment(t *testing.T) string {
 	t.Helper()
 
@@ -196,12 +278,14 @@ func newCodexACPClient(t *testing.T, workingDir string) (*Client, *bytes.Buffer)
 		maybeSkipCodexIntegration(t, err, stderr.String())
 		failCodexWithDetails(t, "start ACP client failed", err, stderr.String())
 	}
-	defer closeTestCloser(t, client)
+	t.Cleanup(func() {
+		closeTestCloser(t, client)
+	})
 	return client, &stderr
 }
 
 func codexACPCommand() []string {
-	return []string{"npx", "-y", "@normahq/codex-acp-bridge"}
+	return []string{"npx", "-y", "@normahq/codex-acp-bridge@1.7.7"}
 }
 
 func mustInitializeCodexACP(t *testing.T, client *Client, stderr *bytes.Buffer) acp.InitializeResponse {

@@ -472,11 +472,11 @@ func logUnsupportedACPUpdate(logger logger, ext ExtendedSessionNotification) {
 
 	logEvent := logger.Trace().Str("acp_update_type", updateType)
 	if updateType == unknownValue {
-		logEvent = logEvent.RawJSON("acp_update_payload", ext.Raw)
+		logEvent = logEvent.Int("acp_update_bytes", len(ext.Raw))
 	} else if payload, ok := marshalACPUpdatePayload(logger, "session_update_"+updateType, ext.Update); ok {
-		logEvent = logEvent.Str("acp_update_payload", payload)
+		logEvent = logEvent.Int("acp_update_bytes", len(payload))
 	}
-	logEvent.Msg("ignored unsupported acp session update payload")
+	logEvent.Msg("ignored unsupported acp session update metadata")
 }
 
 func logIgnoredACPUpdate(logger logger, updateType string, payload any) {
@@ -489,9 +489,9 @@ func logIgnoredACPUpdate(logger logger, updateType string, payload any) {
 
 	logEvent := logger.Trace().Str("acp_update_type", updateType)
 	if marshaled, ok := marshalACPUpdatePayload(logger, "session_update_"+updateType, payload); ok {
-		logEvent = logEvent.Str("acp_update_payload", marshaled)
+		logEvent = logEvent.Int("acp_update_bytes", len(marshaled))
 	}
-	logEvent.Msg("ignored non-user-visible acp session update payload")
+	logEvent.Msg("ignored non-user-visible acp session update metadata")
 }
 
 func extendedSessionUpdateType(ext ExtendedSessionNotification) string {
@@ -523,9 +523,8 @@ func logIgnoredACPContentBlock(logger logger, block acp.ContentBlock) {
 	}
 	logger.Trace().
 		Str("acp_content_block_type", blockType).
-		Str("acp_content_block_text", acpContentBlockLogText(block)).
 		Interface("acp_content_block", acpContentBlockLogValue(block)).
-		Msg("ignored acp content block payload")
+		Msg("ignored acp content block metadata")
 }
 
 func acpContentBlockLogText(block acp.ContentBlock) string {
@@ -549,8 +548,8 @@ func acpContentBlockLogValue(block acp.ContentBlock) map[string]any {
 	switch {
 	case block.Text != nil:
 		return map[string]any{
-			"type": acpTypeText,
-			"text": block.Text.Text,
+			"type":  acpTypeText,
+			"bytes": len(block.Text.Text),
 		}
 	case block.Image != nil:
 		return logACPImageBlockValue(block.Image)
@@ -574,10 +573,10 @@ func logACPImageBlockValue(img *acp.ContentBlockImage) map[string]any {
 		obj["mime_type"] = img.MimeType
 	}
 	if img.Uri != nil && *img.Uri != "" {
-		obj["uri"] = *img.Uri
+		obj["has_uri"] = true
 	}
 	if img.Data != "" {
-		obj["data_len"] = len(img.Data)
+		obj["data_bytes"] = base64DecodedLen(img.Data)
 	}
 	return obj
 }
@@ -588,30 +587,21 @@ func logACPAudioBlockValue(audio *acp.ContentBlockAudio) map[string]any {
 		obj["mime_type"] = audio.MimeType
 	}
 	if audio.Data != "" {
-		obj["data_len"] = len(audio.Data)
+		obj["data_bytes"] = base64DecodedLen(audio.Data)
 	}
 	return obj
 }
 
 func logACPResourceLinkBlockValue(link *acp.ContentBlockResourceLink) map[string]any {
 	obj := map[string]any{"type": "resource_link"}
-	if link.Name != "" {
-		obj["name"] = link.Name
-	}
 	if link.Uri != "" {
-		obj["uri"] = link.Uri
-	}
-	if link.Description != nil && *link.Description != "" {
-		obj["description"] = *link.Description
+		obj["has_uri"] = true
 	}
 	if link.MimeType != nil && *link.MimeType != "" {
 		obj["mime_type"] = *link.MimeType
 	}
 	if link.Size != nil {
 		obj["size"] = *link.Size
-	}
-	if link.Title != nil && *link.Title != "" {
-		obj["title"] = *link.Title
 	}
 	return obj
 }
@@ -629,9 +619,6 @@ func acpEmbeddedResourceLogValue(resource acp.EmbeddedResourceResource) map[stri
 
 func logACPTextResourceValue(res *acp.TextResourceContents) map[string]any {
 	obj := map[string]any{"kind": acpTypeText}
-	if res.Uri != "" {
-		obj["uri"] = res.Uri
-	}
 	if res.MimeType != nil && *res.MimeType != "" {
 		obj["mime_type"] = *res.MimeType
 	}
@@ -643,14 +630,11 @@ func logACPTextResourceValue(res *acp.TextResourceContents) map[string]any {
 
 func logACPBlobResourceValue(res *acp.BlobResourceContents) map[string]any {
 	obj := map[string]any{"kind": "blob"}
-	if res.Uri != "" {
-		obj["uri"] = res.Uri
-	}
 	if res.MimeType != nil && *res.MimeType != "" {
 		obj["mime_type"] = *res.MimeType
 	}
 	if res.Blob != "" {
-		obj["blob_len"] = len(res.Blob)
+		obj["blob_bytes"] = base64DecodedLen(res.Blob)
 	}
 	return obj
 }

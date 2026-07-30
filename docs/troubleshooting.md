@@ -73,10 +73,9 @@ stdin/stdout and writes logs to stderr. Provider-specific ACP inspection tools
 can help confirm initialization, session creation, config options, and prompt
 updates.
 
-## Trace Logs Contain Sensitive Payloads
+## Trace Logs Contain Structural Metadata
 
-Debug logging intentionally omits prompt text and raw ACP content. Trace
-logging includes complete protocol payloads to support low-level diagnostics
-and can therefore expose prompts, metadata, resource URIs, tool input/output,
-and provider responses. Enable trace logging only in a controlled environment
-and apply appropriate retention and access controls.
+Debug and trace logging omit prompt text, encoded media, resource URIs, and raw
+JSON-RPC payloads. Trace adds protocol metadata and payload byte lengths.
+Provider stderr is independent and may contain provider-owned diagnostics, so
+capture it only in a controlled environment.

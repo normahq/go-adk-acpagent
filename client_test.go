@@ -93,7 +93,7 @@ func TestClientPromptReceivesUpdates(t *testing.T) {
 	}
 }
 
-func TestClientPromptLogsPayloadAtTrace(t *testing.T) {
+func TestClientPromptOmitsPayloadAtTrace(t *testing.T) {
 	var logBuf testLogBuffer
 	client, err := NewClient(t.Context(), ClientConfig{
 		Command: helperCommand(t),
@@ -117,8 +117,8 @@ func TestClientPromptLogsPayloadAtTrace(t *testing.T) {
 	}
 	readPromptOutput(t, updates, results)
 
-	if got := logBuf.String(); !strings.Contains(got, "sensitive-prompt") {
-		t.Fatalf("trace log does not contain prompt payload: %q", got)
+	if got := logBuf.String(); strings.Contains(got, "sensitive-prompt") {
+		t.Fatalf("trace log contains prompt payload: %q", got)
 	}
 }
 
@@ -559,7 +559,7 @@ func TestWireLogBufferSuppressesWirePayloadInDebug(t *testing.T) {
 	}
 }
 
-func TestWireLogBufferEmitsWirePayloadInTrace(t *testing.T) {
+func TestWireLogBufferEmitsWireMetadataInTrace(t *testing.T) {
 	var logBuf testLogBuffer
 	logger := testLogger(&logBuf, levelTrace)
 
@@ -572,6 +572,9 @@ func TestWireLogBufferEmitsWirePayloadInTrace(t *testing.T) {
 	}
 	if !strings.Contains(got, `"direction":"recv"`) {
 		t.Fatalf("trace log missing direction field: %q", got)
+	}
+	if !strings.Contains(got, `"result_bytes":11`) || strings.Contains(got, `"ok":true`) {
+		t.Fatalf("trace log = %q, want byte count without result payload", got)
 	}
 }
 
@@ -981,6 +984,26 @@ func TestClientLogsSessionUpdateAtTrace(t *testing.T) {
 	got := logBuf.String()
 	if !strings.Contains(got, "received acp session update") {
 		t.Fatalf("trace log missing session update message: %q", got)
+	}
+}
+
+func TestClientLogsUnknownSessionUpdateSizeWithoutPayload(t *testing.T) {
+	var logBuf testLogBuffer
+	logger := testLogger(&logBuf, levelTrace)
+	client := &Client{logger: logger}
+	const sensitive = "sensitive-update-content"
+
+	client.dispatchSessionUpdate(ExtendedSessionNotification{
+		SessionNotification: acp.SessionNotification{SessionId: "session-1"},
+		Raw:                 []byte(`{"update":"` + sensitive + `"}`),
+	})
+
+	got := logBuf.String()
+	if strings.Contains(got, sensitive) {
+		t.Fatalf("trace log contains unknown update payload: %q", got)
+	}
+	if !strings.Contains(got, `"raw_update_bytes":37`) {
+		t.Fatalf("trace log = %q, want unknown update byte count", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package acpagent
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"iter"
 	"log/slog"
@@ -16,6 +17,103 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
+
+func TestAgentForwardsStructuredPromptAndInstructions(t *testing.T) {
+	image := []byte("image")
+	prompt := []acp.ContentBlock{
+		acp.TextBlock("guide\n\nUser message:\n"),
+		acp.TextBlock("look"),
+		acp.ImageBlock(base64.StdEncoding.EncodeToString(image), "image/png"),
+	}
+	a, err := NewWithContext(t.Context(), Config{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_EXPECT_PROMPT_BLOCKS": expectedPromptBlocksJSON(t, prompt),
+		}),
+		WorkingDir:  t.TempDir(),
+		Instruction: "guide",
+	})
+	if err != nil {
+		t.Fatalf("NewWithContext() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+
+	sessionService := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{
+		AppName:        "test-app",
+		Agent:          a,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	sess, err := sessionService.Create(t.Context(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+	})
+	if err != nil {
+		t.Fatalf("session.Create() error = %v", err)
+	}
+	content := &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{
+			genai.NewPartFromText("look"),
+			genai.NewPartFromBytes(image, "image/png"),
+		},
+	}
+
+	got := collectFinalText(t, r.Run(t.Context(), "test-user", sess.Session.ID(), content, agent.RunConfig{}))
+	if got != "session-1:look" {
+		t.Fatalf("final text = %q, want session-1:look", got)
+	}
+}
+
+func TestAgentPreservesStructuredPromptDuringSessionRecovery(t *testing.T) {
+	image := []byte("image")
+	prompt := []acp.ContentBlock{
+		acp.TextBlock("look"),
+		acp.ImageBlock(base64.StdEncoding.EncodeToString(image), "image/png"),
+	}
+	a, err := NewWithContext(t.Context(), Config{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_EXPECT_PROMPT_BLOCKS":               expectedPromptBlocksJSON(t, prompt, prompt),
+			"GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND": "1",
+		}),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewWithContext() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+
+	sessionService := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{
+		AppName:        "test-app",
+		Agent:          a,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	sess, err := sessionService.Create(t.Context(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+	})
+	if err != nil {
+		t.Fatalf("session.Create() error = %v", err)
+	}
+	content := &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{
+			genai.NewPartFromText("look"),
+			genai.NewPartFromBytes(image, "image/png"),
+		},
+	}
+
+	got := collectFinalText(t, r.Run(t.Context(), "test-user", sess.Session.ID(), content, agent.RunConfig{}))
+	if got != "session-2:look" {
+		t.Fatalf("final text = %q, want session-2:look", got)
+	}
+}
 
 func TestAgentResumesSessionFromStateAndPersistsSessionState(t *testing.T) {
 	workingDir := t.TempDir()

@@ -70,8 +70,7 @@ type Config struct {
 	// PermissionHandler decides generic agent permission requests at the ADK boundary.
 	PermissionHandler PermissionHandler
 	// Logger is the slog logger to use for this agent.
-	// Trace-level records can contain complete ACP payloads and other sensitive
-	// content.
+	// Trace-level records include protocol metadata but omit prompt content.
 	Logger *slog.Logger
 	// MCPServers is the map of MCP server configurations.
 	MCPServers map[string]MCPServerConfig
@@ -237,9 +236,9 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 	return func(yield func(*session.Event, error) bool) {
 		baseLogger := a.invocationLogger(ctx)
 
-		prompt := extractPromptText(ctx.UserContent())
-		if strings.TrimSpace(prompt) == "" {
-			yield(nil, errors.New("prompt is empty"))
+		prompt, err := promptContentBlocks(ctx.UserContent())
+		if err != nil {
+			yield(nil, err)
 			return
 		}
 
@@ -253,7 +252,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		}
 		promptForRun := prompt
 		if remote.fresh {
-			promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
+			promptForRun = prependInstructionsToContent(remote.firstPromptInstructions, prompt)
 		}
 		stateEvent := session.NewEvent(ctx, ctx.InvocationID())
 		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
@@ -274,7 +273,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			remote = recovered
 			promptForRun = prompt
 			if remote.fresh {
-				promptForRun = prependInstructionsToPrompt(remote.firstPromptInstructions, prompt)
+				promptForRun = prependInstructionsToContent(remote.firstPromptInstructions, prompt)
 			}
 			stateEvent := session.NewEvent(ctx, ctx.InvocationID())
 			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
@@ -321,21 +320,16 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 	}
 }
 
-func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, remoteSessionID, prompt string, yield func(*session.Event, error) bool) (promptRunResult, error) {
+func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, remoteSessionID string, prompt []acp.ContentBlock, yield func(*session.Event, error) bool) (promptRunResult, error) {
 	var out promptRunResult
 
 	logger.Debug().
 		Str("acp_session_id", remoteSessionID).
-		Int("prompt_len", len(prompt)).
+		Int("prompt_blocks", len(prompt)).
+		Interface("prompt_block_summary", promptBlockLogs(prompt)).
 		Msg("starting adk invocation")
-	if logger.enabled(levelTrace) {
-		logger.Trace().
-			Str("acp_session_id", remoteSessionID).
-			Str("prompt", prompt).
-			Msg("starting adk invocation payload")
-	}
 
-	updates, resultCh, err := a.client.Prompt(logCtx, remoteSessionID, prompt)
+	updates, resultCh, err := a.client.PromptWithContent(logCtx, remoteSessionID, prompt)
 	if err != nil {
 		return promptRunResult{}, err
 	}

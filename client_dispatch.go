@@ -44,7 +44,7 @@ func (c *Client) logLastChunkInSeries(sessionID acp.SessionId) {
 		sessionLogger.Trace().
 			Str("acp_session_id", string(sessionID)).
 			Interface("acp_content_block", last.contentBlock).
-			Msg("received last acp chunk payload")
+			Msg("received last acp chunk metadata")
 	}
 }
 
@@ -128,7 +128,7 @@ func (c *Client) dispatchSessionUpdate(ext ExtendedSessionNotification) {
 			Str("update_kind", updateType)
 
 		if updateType == unknownValue {
-			logEvent = logEvent.RawJSON("raw_update", ext.Raw)
+			logEvent = logEvent.Int("raw_update_bytes", len(ext.Raw))
 		}
 
 		logACPUpdateContentFields(logEvent, ext.Update)

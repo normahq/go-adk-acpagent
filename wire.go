@@ -168,10 +168,10 @@ func (b *wireLogBuffer) logLine(line []byte) {
 		evt = evt.Str("id", strings.TrimSpace(string(env.ID)))
 	}
 	if len(env.Params) > 0 {
-		evt = evt.RawJSON("params", env.Params)
+		evt = evt.Int("params_bytes", len(env.Params))
 	}
 	if len(env.Result) > 0 {
-		evt = evt.RawJSON("result", env.Result)
+		evt = evt.Int("result_bytes", len(env.Result))
 	}
 	if env.Error != nil {
 		evt = evt.Int("error_code", env.Error.Code).Str("error_message", env.Error.Message)

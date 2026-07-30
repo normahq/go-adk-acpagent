@@ -53,6 +53,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	supportSessionResume := os.Getenv("GO_SUPPORT_SESSION_RESUME") == "1"
 	supportLoadSession := os.Getenv("GO_SUPPORT_LOAD_SESSION") == "1"
 	expectedPromptsRaw := os.Getenv("GO_EXPECT_PROMPTS")
+	expectedPromptBlocksRaw := os.Getenv("GO_EXPECT_PROMPT_BLOCKS")
 	forceNewSessionID := os.Getenv("GO_FORCE_NEW_SESSION_ID")
 	disableSetConfigOption := os.Getenv("GO_DISABLE_SET_CONFIG_OPTION") == "1"
 	disableSetMode := os.Getenv("GO_DISABLE_SET_MODE") == "1"
@@ -73,6 +74,10 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	var expectedPrompts []string
 	if strings.TrimSpace(expectedPromptsRaw) != "" {
 		must(json.Unmarshal([]byte(expectedPromptsRaw), &expectedPrompts))
+	}
+	var expectedPromptBlocks [][]acp.ContentBlock
+	if strings.TrimSpace(expectedPromptBlocksRaw) != "" {
+		must(json.Unmarshal([]byte(expectedPromptBlocksRaw), &expectedPromptBlocks))
 	}
 	handleSessionRestore := func(
 		msg helperEnvelope,
@@ -483,7 +488,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				})
 				continue
 			}
-			prompt := req.Prompt[0].Text
+			prompt := helperPromptText(req.Prompt)
 			if len(expectedPrompts) > 0 {
 				if promptCount > len(expectedPrompts) {
 					writeEnvelope(stdout, helperEnvelope{
@@ -499,6 +504,26 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 						JSONRPC: "2.0",
 						ID:      msg.ID,
 						Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected prompt[%d]: %q, want %q", promptCount, prompt, wantPrompt)},
+					})
+					continue
+				}
+			}
+			if len(expectedPromptBlocks) > 0 {
+				if promptCount > len(expectedPromptBlocks) {
+					writeEnvelope(stdout, helperEnvelope{
+						JSONRPC: "2.0",
+						ID:      msg.ID,
+						Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected extra structured prompt %d", promptCount)},
+					})
+					continue
+				}
+				gotRaw := compactJSONForCompare(mustJSON(req.Prompt))
+				wantRaw := compactJSONForCompare(mustJSON(expectedPromptBlocks[promptCount-1]))
+				if gotRaw != wantRaw {
+					writeEnvelope(stdout, helperEnvelope{
+						JSONRPC: "2.0",
+						ID:      msg.ID,
+						Error:   &helperError{Code: -32000, Message: fmt.Sprintf("unexpected prompt blocks[%d]: %s, want %s", promptCount, gotRaw, wantRaw)},
 					})
 					continue
 				}
@@ -883,13 +908,18 @@ type helperSetSessionModeRequest struct {
 type helperSetSessionModeResponse struct{}
 
 type helperPromptRequest struct {
-	SessionID string              `json:"sessionId"`
-	Prompt    []helperContentPart `json:"prompt"`
+	SessionID string             `json:"sessionId"`
+	Prompt    []acp.ContentBlock `json:"prompt"`
 }
 
-type helperContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+func helperPromptText(blocks []acp.ContentBlock) string {
+	var text strings.Builder
+	for _, block := range blocks {
+		if block.Text != nil {
+			text.WriteString(block.Text.Text)
+		}
+	}
+	return text.String()
 }
 
 type helperPermissionRequest struct {

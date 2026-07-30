@@ -225,8 +225,8 @@ func (a *Agent) logBoundRemoteSession(logger logger, message, remoteSessionID, c
 	if logger.enabled(levelTrace) {
 		logger.Trace().
 			Str("acp_session_id", remoteSessionID).
-			RawJSON("meta", []byte(metaJSON)).
-			Msg(message + " payload")
+			Int("meta_bytes", len(metaJSON)).
+			Msg(message + " metadata")
 	}
 }
 

@@ -27,6 +27,7 @@ want to run is exposed as an ACP command.
 | ACP lifecycle | Starts one ACP subprocess per agent instance and closes it on shutdown. |
 | Session binding | Creates, stores, reuses, and resumes ACP sessions through ADK session state. |
 | Event mapping | Converts ACP updates into ADK events and state deltas. |
+| Structured prompts | Preserves ordered ADK text, inline image/audio/blob, and file data as ACP content blocks. |
 | Permissions | Maps protocol callbacks into ADK-facing `PermissionRequest` values handled by `PermissionHandler`. |
 | Session config | Applies ACP session-bound values such as model, mode, or thought level. |
 | MCP forwarding | Sends configured MCP servers to ACP session creation and resume calls. |
@@ -125,9 +126,9 @@ import "github.com/normahq/go-adk-acpagent/v2/acperror"
 - Call `Close` during shutdown so the ACP subprocess exits cleanly.
 - Pass the application lifecycle context to `NewWithContext`. The legacy
   `Config.Context` field remains available for v2 compatibility.
-- Debug logs contain structural diagnostics only. Trace logs can contain full
-  prompts, ACP metadata, resource URIs, tool data, and protocol payloads; do not
-  enable or retain trace logs where that content is sensitive.
+- Debug and trace logs omit prompt and update payload content. They retain
+  structural diagnostics such as content-block types, counts, and byte lengths.
+  Provider stderr remains separately controlled by `Stderr`.
 - Keep ACP protocol messages on stdout and provider logs on stderr.
 - Use `SessionConfig` for session-bound model, mode, thought-level, or
   provider-specific choices. Use `SelectSessionConfigValue` for select options

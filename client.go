@@ -64,8 +64,7 @@ type ClientConfig struct {
 	// PermissionHandler decides how to respond to ACP permission requests.
 	PermissionHandler ProtocolPermissionHandler
 	// Logger is the slog logger to use for this client.
-	// Trace-level records can contain complete ACP payloads and other sensitive
-	// content.
+	// Trace-level records include protocol metadata but omit prompt content.
 	Logger *slog.Logger
 }
 
@@ -724,17 +723,12 @@ func (c *Client) promptWithBlocks(ctx context.Context, sessionID string, prompt 
 	promptBlocks := append([]acp.ContentBlock(nil), prompt...)
 	logEvent := l.Debug().
 		Str("acp_session_id", sessionID).
-		Int("prompt_blocks", len(promptBlocks))
+		Int("prompt_blocks", len(promptBlocks)).
+		Interface("prompt_block_summary", promptBlockLogs(promptBlocks))
 	if promptLen > 0 {
 		logEvent = logEvent.Int("prompt_len", promptLen)
 	}
 	logEvent.Msg("sending acp session/prompt")
-	if l.enabled(levelTrace) {
-		l.Trace().
-			Str("acp_session_id", sessionID).
-			Str("prompt", renderACPContentBlocks(promptBlocks)).
-			Msg("sending acp session/prompt payload")
-	}
 
 	resultCh := make(chan PromptResult, 1)
 	go func() {

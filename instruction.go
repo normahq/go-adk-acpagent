@@ -39,14 +39,6 @@ const (
 	tempPrefix = "temp:"
 )
 
-func prependInstructionsToPrompt(instructions string, prompt string) string {
-	instructions = strings.TrimSpace(instructions)
-	if instructions == "" {
-		return prompt
-	}
-	return instructions + "\n\nUser message:\n" + prompt
-}
-
 func normalizeInstruction(primary, deprecated string) string {
 	inst := strings.TrimSpace(primary)
 	if inst != "" {

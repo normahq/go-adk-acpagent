@@ -2,7 +2,6 @@ package acpagent
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 )
 
@@ -127,13 +126,6 @@ func (e *logEvent) Interface(key string, value any) *logEvent {
 		return e
 	}
 	e.attrs = append(e.attrs, slog.Any(key, value))
-	return e
-}
-
-func (e *logEvent) RawJSON(key string, value json.RawMessage) *logEvent {
-	if e.enabled && len(value) > 0 {
-		e.attrs = append(e.attrs, slog.String(key, string(value)))
-	}
 	return e
 }
 

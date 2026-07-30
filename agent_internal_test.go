@@ -307,13 +307,10 @@ func TestContentBlockLogHelpers(t *testing.T) {
 		t.Fatalf("acpContentBlockLogText(link) = %q", got)
 	}
 	wantLink := map[string]any{
-		"type":        "resource_link",
-		"name":        "README.md",
-		"uri":         "file:///README.md",
-		"description": "docs",
-		"mime_type":   "text/plain",
-		"size":        42,
-		"title":       "Readme",
+		"type":      "resource_link",
+		"has_uri":   true,
+		"mime_type": "text/plain",
+		"size":      42,
 	}
 	if diff := cmp.Diff(wantLink, acpContentBlockLogValue(link)); diff != "" {
 		t.Errorf("acpContentBlockLogValue(link) mismatch (-want +got):\n%s", diff)
@@ -326,7 +323,6 @@ func TestContentBlockLogHelpers(t *testing.T) {
 		"type": "resource",
 		"resource": map[string]any{
 			"kind":      "text",
-			"uri":       "file:///a.txt",
 			"mime_type": "text/plain",
 			"text_len":  5,
 		},
@@ -341,10 +337,9 @@ func TestContentBlockLogHelpers(t *testing.T) {
 	wantBlobResource := map[string]any{
 		"type": "resource",
 		"resource": map[string]any{
-			"kind":      "blob",
-			"uri":       "file:///a.bin",
-			"mime_type": "text/plain",
-			"blob_len":  4,
+			"kind":       "blob",
+			"mime_type":  "text/plain",
+			"blob_bytes": 3,
 		},
 	}
 	if diff := cmp.Diff(wantBlobResource, acpContentBlockLogValue(blobResource)); diff != "" {
@@ -866,18 +861,24 @@ func TestAgentMetadataAndTextHelpers(t *testing.T) {
 
 	a := &Agent{sessionConfig: []SessionConfigValue{{ID: "model", Value: "model"}, {ID: "mode", Value: "mode"}}}
 	a.logBoundRemoteSession(newLogger(nil, ""), "bound", "session-1", "/tmp", "{}")
+	var logBuf testLogBuffer
+	a.logBoundRemoteSession(testLogger(&logBuf, levelTrace), "bound", "session-1", "/tmp", `{"secret":"value"}`)
+	if got := logBuf.String(); strings.Contains(got, `"secret"`) || strings.Contains(got, `"value"`) ||
+		!strings.Contains(got, `"meta_bytes":18`) {
+		t.Fatalf("session trace log = %q, want metadata size without payload", got)
+	}
 	a.logADKEvent(newLogger(nil, ""), nil, "ignored")
 
 	copyACPProviderErrorMetadata(nil, map[string]any{"provider_error": map[string]any{"message": "ignored"}})
 	emptyURI := ""
 	imageLog := logACPImageBlockValue(&acp.ContentBlockImage{MimeType: "image/png", Uri: &emptyURI})
-	if _, ok := imageLog["uri"]; ok {
-		t.Fatalf("logACPImageBlockValue(empty uri) = %#v, want no uri", imageLog)
+	if _, ok := imageLog["has_uri"]; ok {
+		t.Fatalf("logACPImageBlockValue(empty uri) = %#v, want no has_uri", imageLog)
 	}
 	uri := "file:///tmp/image.png"
-	imageLog = logACPImageBlockValue(&acp.ContentBlockImage{Data: "abc", Uri: &uri})
-	if imageLog["uri"] != uri || imageLog["data_len"] != 3 {
-		t.Fatalf("logACPImageBlockValue(uri data) = %#v, want uri and data_len", imageLog)
+	imageLog = logACPImageBlockValue(&acp.ContentBlockImage{Data: "YWJj", Uri: &uri})
+	if imageLog["has_uri"] != true || imageLog["data_bytes"] != 3 {
+		t.Fatalf("logACPImageBlockValue(uri data) = %#v, want has_uri and data_bytes", imageLog)
 	}
 }
 

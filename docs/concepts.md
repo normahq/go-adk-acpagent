@@ -24,6 +24,8 @@ The package handles:
   `PermissionDecision` contract used by `PermissionHandler`.
 - Optional session configuration through ACP session config options.
 - Optional MCP server forwarding to ACP `session/new` and `session/resume`.
+- Ordered ADK user content conversion into ACP text, image, audio, embedded
+  resource, and resource-link prompt blocks.
 
 See [Event mapping](event-mapping.md) for the exact ACP update to ADK event
 contract.
@@ -51,6 +53,24 @@ after prompt failures that indicate a stale or missing active session. ACP
 `session/load` is not used because load replays prior history and this package
 does not project that replay into ADK-visible history.
 
+## Structured User Content
+
+The adapter preserves the order of supported ADK user parts:
+
+- text becomes an ACP text block;
+- inline image and audio bytes become base64 ACP image and audio blocks;
+- other inline bytes become an embedded blob resource with a stable
+  content-derived URI;
+- image file data becomes an ACP image URI block;
+- other file data becomes an ACP resource link with its display name and MIME
+  type.
+
+Unsupported function, tool, executable-code, or result parts fail explicitly
+instead of being silently discarded. First-turn instructions are prepended as
+a separate text block, so media and resource parts remain structured during
+initial and recovered prompts. The selected ACP agent must advertise and
+implement any optional prompt capabilities it receives.
+
 ## Session Configuration
 
 `Config.SessionConfig` is applied with ACP `session/set_config_option`. ACP
@@ -69,10 +89,10 @@ or prompt execution can fail with a wrapped ACP request error.
 `Config.Logger` accepts `*slog.Logger` and is used for adapter diagnostics. ACP
 subprocess stderr is controlled separately by `Config.Stderr`.
 
-Debug records contain structural fields such as session IDs, update types,
-counts, and lengths. Trace records can contain complete prompts, ACP metadata,
-resource URIs, tool data, and raw JSON-RPC payloads. Treat trace logs as
-sensitive and enable them only for controlled diagnostics.
+Debug and trace records contain structural fields such as session IDs, update
+types, content-block types, counts, and byte lengths. Prompt text, encoded
+media, resource URIs, and raw JSON-RPC payloads are omitted. Provider stderr
+may still contain provider-owned diagnostics and remains controlled separately.
 
 Recommended defaults:
 

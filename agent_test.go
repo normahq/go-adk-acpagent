@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	acp "github.com/coder/acp-go-sdk"
 )
 
 const (
@@ -32,6 +34,15 @@ func expectedPromptsJSON(t *testing.T, prompts ...string) string {
 	raw, err := json.Marshal(prompts)
 	if err != nil {
 		t.Fatalf("json.Marshal(expected prompts) error = %v", err)
+	}
+	return string(raw)
+}
+
+func expectedPromptBlocksJSON(t *testing.T, prompts ...[]acp.ContentBlock) string {
+	t.Helper()
+	raw, err := json.Marshal(prompts)
+	if err != nil {
+		t.Fatalf("json.Marshal(expected prompt blocks) error = %v", err)
 	}
 	return string(raw)
 }
