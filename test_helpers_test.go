@@ -62,6 +62,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	failResumeInvalidParamsSessionNotFound := os.Getenv("GO_FAIL_RESUME_INVALID_PARAMS_SESSION_NOT_FOUND") == "1"
 	failResumeInvalidThread := os.Getenv("GO_FAIL_RESUME_INVALID_THREAD") == "1"
 	failResumeInvalidSessionID := os.Getenv("GO_FAIL_RESUME_INVALID_SESSION_ID") == "1"
+	failResumeMissingRollout := os.Getenv("GO_FAIL_RESUME_MISSING_ROLLOUT") == "1"
 	failResumeAlreadyExists := os.Getenv("GO_FAIL_RESUME_ALREADY_EXISTS") == "1"
 	failFirstResumeInvalidParamsSessionNotFound := os.Getenv("GO_FAIL_FIRST_RESUME_INVALID_PARAMS_SESSION_NOT_FOUND") == "1"
 	failLoadMethodNotFound := os.Getenv("GO_FAIL_LOAD_METHOD_NOT_FOUND") == "1"
@@ -195,6 +196,20 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 					Message: "Internal error",
 					Data: map[string]any{
 						"error": "thread/resume: bridge backend rpc error (-32600): invalid session id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `s` at 1",
+					},
+				},
+			})
+			return
+		}
+		if method == acp.AgentMethodSessionResume && failResumeMissingRollout {
+			writeEnvelope(stdout, helperEnvelope{
+				JSONRPC: "2.0",
+				ID:      msg.ID,
+				Error: &helperError{
+					Code:    -32603,
+					Message: "Internal error",
+					Data: map[string]any{
+						"error": "thread/resume: bridge backend rpc error (-32600): no rollout found for thread id " + req.SessionID,
 					},
 				},
 			})

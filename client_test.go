@@ -421,6 +421,14 @@ func TestIsACPSessionNotFoundError(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "message contains missing rollout",
+			err: &acp.RequestError{
+				Code:    -32600,
+				Message: "no rollout found for thread id 019e8700-ede7-70b2-9104-9f7fbf73c1f5",
+			},
+			want: true,
+		},
+		{
 			name: "plain error",
 			err:  errors.New("not found"),
 			want: false,
@@ -432,6 +440,17 @@ func TestIsACPSessionNotFoundError(t *testing.T) {
 				Message: "Internal error",
 				Data: map[string]any{
 					"error": "thread/resume: bridge backend rpc error (-32600): invalid thread id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `s` at 1",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "wrapped missing rollout data",
+			err: &acp.RequestError{
+				Code:    -32603,
+				Message: "Internal error",
+				Data: map[string]any{
+					"error": "thread/resume: bridge backend rpc error (-32600): no rollout found for thread id 019e8700-ede7-70b2-9104-9f7fbf73c1f5",
 				},
 			},
 			want: true,

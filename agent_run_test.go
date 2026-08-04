@@ -447,6 +447,18 @@ func TestAgentRecoversPromptFailureWithResumeOrNewSession(t *testing.T) {
 			wantID:    testSessionOneID,
 		},
 		{
+			name: "missing codex rollout",
+			env: map[string]string{
+				"GO_SUPPORT_SESSION_RESUME":             "1",
+				"GO_SUPPORT_LOAD_SESSION":               "1",
+				"GO_FAIL_IF_LOAD_CALLED":                "1",
+				"GO_FAIL_RESUME_MISSING_ROLLOUT":        "1",
+				"GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND": "1",
+			},
+			sessionID: "019e8700-ede7-70b2-9104-9f7fbf73c1f5",
+			wantID:    testSessionOneID,
+		},
+		{
 			name: "invalid session id from bridge backend",
 			env: map[string]string{
 				"GO_SUPPORT_SESSION_RESUME":             "1",

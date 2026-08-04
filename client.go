@@ -642,6 +642,12 @@ func isACPSessionNotFoundError(err error) bool {
 	if strings.Contains(data, "session not found") {
 		return true
 	}
+	// Codex reports a missing persisted thread rollout as an internal bridge
+	// error even though the ACP session binding is stale and recoverable.
+	if strings.Contains(message, "no rollout found for thread id") ||
+		strings.Contains(data, "no rollout found for thread id") {
+		return true
+	}
 	// Codex ACP bridge now validates thread IDs as UUIDs during thread/resume.
 	// Legacy persisted ACP session IDs like "session-1" should be treated as
 	// stale restore state and replaced with a fresh session/new binding.
