@@ -3,6 +3,7 @@ package acpagent
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"iter"
 	"log/slog"
 	"os"
@@ -114,6 +115,32 @@ func TestAgentPreservesStructuredPromptDuringSessionRecovery(t *testing.T) {
 	got := collectFinalText(t, r.Run(t.Context(), "test-user", sess.Session.ID(), content, agent.RunConfig{}))
 	if got != "session-2:look" {
 		t.Fatalf("final text = %q, want session-2:look", got)
+	}
+}
+
+func TestAgentUsesInitializedPromptCapabilities(t *testing.T) {
+	a, err := NewWithContext(t.Context(), Config{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_PROMPT_CAP_IMAGE":            "0",
+			"GO_PROMPT_CAP_AUDIO":            "0",
+			"GO_PROMPT_CAP_EMBEDDED_CONTEXT": "0",
+		}),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewWithContext() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+
+	if a.promptSupport != (promptSupport{}) {
+		t.Fatalf("prompt support = %#v, want all optional capabilities disabled", a.promptSupport)
+	}
+
+	_, err = promptContentBlocks(&genai.Content{
+		Parts: []*genai.Part{genai.NewPartFromBytes([]byte("image"), "image/png")},
+	}, a.promptSupport)
+	if err == nil || !errors.Is(err, ErrPromptCapabilityUnsupported) {
+		t.Fatalf("promptContentBlocks() error = %v, want initialized capability error", err)
 	}
 }
 

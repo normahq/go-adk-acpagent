@@ -3,6 +3,7 @@ package acpagent
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"path"
@@ -12,14 +13,70 @@ import (
 	"google.golang.org/genai"
 )
 
-func promptContentBlocks(content *genai.Content, capabilities acp.PromptCapabilities) ([]acp.ContentBlock, error) {
+// ErrPromptCapabilityUnsupported reports that a prompt contains an optional
+// ACP content block which the initialized agent did not advertise.
+var ErrPromptCapabilityUnsupported = errors.New("acp prompt capability unsupported")
+
+// PromptCapabilityError describes a capability mismatch without including
+// prompt bytes, text, URIs, or filesystem paths.
+type PromptCapabilityError struct {
+	PartKind           string
+	MIMEClass          string
+	RequiredCapability string
+	Fallback           string
+}
+
+func (e *PromptCapabilityError) Error() string {
+	if e == nil {
+		return ErrPromptCapabilityUnsupported.Error()
+	}
+
+	message := ErrPromptCapabilityUnsupported.Error()
+	if e.PartKind != "" {
+		message += ": " + e.PartKind
+	}
+	if e.MIMEClass != "" {
+		message += " (" + e.MIMEClass + ")"
+	}
+	if e.RequiredCapability != "" {
+		message += " requires promptCapabilities." + e.RequiredCapability
+	}
+	if e.Fallback != "" {
+		message += "; use " + e.Fallback + " instead"
+	}
+	return message
+}
+
+func (e *PromptCapabilityError) Unwrap() error {
+	return ErrPromptCapabilityUnsupported
+}
+
+type promptSupport struct {
+	image           bool
+	audio           bool
+	embeddedContext bool
+}
+
+func promptSupportFromCapabilities(capabilities acp.PromptCapabilities) promptSupport {
+	return promptSupport{
+		image:           capabilities.Image,
+		audio:           capabilities.Audio,
+		embeddedContext: capabilities.EmbeddedContext,
+	}
+}
+
+func allPromptSupport() promptSupport {
+	return promptSupport{image: true, audio: true, embeddedContext: true}
+}
+
+func promptContentBlocks(content *genai.Content, support promptSupport) ([]acp.ContentBlock, error) {
 	if content == nil {
 		return nil, fmt.Errorf("prompt content is empty")
 	}
 
 	blocks := make([]acp.ContentBlock, 0, len(content.Parts))
 	for i, part := range content.Parts {
-		block, include, err := promptContentBlock(part, capabilities)
+		block, include, err := promptContentBlock(part, support)
 		if err != nil {
 			return nil, fmt.Errorf("convert prompt part %d: %w", i, err)
 		}
@@ -33,7 +90,7 @@ func promptContentBlocks(content *genai.Content, capabilities acp.PromptCapabili
 	return blocks, nil
 }
 
-func promptContentBlock(part *genai.Part, capabilities acp.PromptCapabilities) (acp.ContentBlock, bool, error) {
+func promptContentBlock(part *genai.Part, support promptSupport) (acp.ContentBlock, bool, error) {
 	if part == nil {
 		return acp.ContentBlock{}, false, fmt.Errorf("part is nil")
 	}
@@ -53,9 +110,9 @@ func promptContentBlock(part *genai.Part, capabilities acp.PromptCapabilities) (
 		}
 		return acp.TextBlock(part.Text), true, nil
 	case "inline_data":
-		return inlineDataBlock(part.InlineData, capabilities)
+		return inlineDataBlock(part.InlineData, support)
 	case "file_data":
-		return fileDataBlock(part.FileData, capabilities)
+		return fileDataBlock(part.FileData, support)
 	default:
 		return acp.ContentBlock{}, false, fmt.Errorf("unsupported ADK content field %s", kinds[0])
 	}
@@ -93,43 +150,55 @@ func promptPartKinds(part *genai.Part) []string {
 	return kinds
 }
 
-func inlineDataBlock(blob *genai.Blob, capabilities acp.PromptCapabilities) (acp.ContentBlock, bool, error) {
+func inlineDataBlock(blob *genai.Blob, support promptSupport) (acp.ContentBlock, bool, error) {
 	if blob == nil || len(blob.Data) == 0 {
 		return acp.ContentBlock{}, false, fmt.Errorf("inline data is empty")
 	}
 
 	mimeType := strings.ToLower(strings.TrimSpace(blob.MIMEType))
-	data := base64.StdEncoding.EncodeToString(blob.Data)
 	switch {
 	case strings.HasPrefix(mimeType, "image/"):
-		if !capabilities.Image {
-			return acp.ContentBlock{}, false, fmt.Errorf("acp agent does not support image prompt content")
+		if !support.image && !support.embeddedContext {
+			return acp.ContentBlock{}, false, newPromptCapabilityError("inline_data", "image", "image", "embeddedContext")
 		}
-		return acp.ImageBlock(data, mimeType), true, nil
+		data := base64.StdEncoding.EncodeToString(blob.Data)
+		if support.image {
+			return acp.ImageBlock(data, mimeType), true, nil
+		}
+		return embeddedResourceBlock(data, blob.Data, mimeType), true, nil
 	case strings.HasPrefix(mimeType, "audio/"):
-		if !capabilities.Audio {
-			return acp.ContentBlock{}, false, fmt.Errorf("acp agent does not support audio prompt content")
+		if !support.audio && !support.embeddedContext {
+			return acp.ContentBlock{}, false, newPromptCapabilityError("inline_data", "audio", "audio", "embeddedContext")
 		}
-		return acp.AudioBlock(data, mimeType), true, nil
+		data := base64.StdEncoding.EncodeToString(blob.Data)
+		if support.audio {
+			return acp.AudioBlock(data, mimeType), true, nil
+		}
+		return embeddedResourceBlock(data, blob.Data, mimeType), true, nil
 	default:
-		if !capabilities.EmbeddedContext {
-			return acp.ContentBlock{}, false, fmt.Errorf("acp agent does not support embedded resource prompt content")
+		if !support.embeddedContext {
+			return acp.ContentBlock{}, false, newPromptCapabilityError("inline_data", mimeClass(mimeType), "embeddedContext", "provide FileData")
 		}
-		sum := sha256.Sum256(blob.Data)
-		contents := &acp.BlobResourceContents{
-			Blob: data,
-			Uri:  fmt.Sprintf("urn:adk:inline:%x", sum),
-		}
-		if mimeType != "" {
-			contents.MimeType = &mimeType
-		}
-		return acp.ResourceBlock(acp.EmbeddedResourceResource{
-			BlobResourceContents: contents,
-		}), true, nil
+		data := base64.StdEncoding.EncodeToString(blob.Data)
+		return embeddedResourceBlock(data, blob.Data, mimeType), true, nil
 	}
 }
 
-func fileDataBlock(file *genai.FileData, capabilities acp.PromptCapabilities) (acp.ContentBlock, bool, error) {
+func embeddedResourceBlock(data string, raw []byte, mimeType string) acp.ContentBlock {
+	sum := sha256.Sum256(raw)
+	contents := &acp.BlobResourceContents{
+		Blob: data,
+		Uri:  fmt.Sprintf("urn:adk:inline:%x", sum),
+	}
+	if mimeType != "" {
+		contents.MimeType = &mimeType
+	}
+	return acp.ResourceBlock(acp.EmbeddedResourceResource{
+		BlobResourceContents: contents,
+	})
+}
+
+func fileDataBlock(file *genai.FileData, support promptSupport) (acp.ContentBlock, bool, error) {
 	if file == nil {
 		return acp.ContentBlock{}, false, fmt.Errorf("file data is empty")
 	}
@@ -138,10 +207,7 @@ func fileDataBlock(file *genai.FileData, capabilities acp.PromptCapabilities) (a
 		return acp.ContentBlock{}, false, fmt.Errorf("file URI is empty")
 	}
 	mimeType := strings.ToLower(strings.TrimSpace(file.MIMEType))
-	if strings.HasPrefix(mimeType, "image/") {
-		if !capabilities.Image {
-			return acp.ContentBlock{}, false, fmt.Errorf("acp agent does not support image prompt content")
-		}
+	if strings.HasPrefix(mimeType, "image/") && support.image {
 		return acp.ContentBlock{
 			Image: &acp.ContentBlockImage{
 				Type:     "image",
@@ -160,6 +226,57 @@ func fileDataBlock(file *genai.FileData, capabilities acp.PromptCapabilities) (a
 		block.ResourceLink.MimeType = &mimeType
 	}
 	return block, true, nil
+}
+
+func newPromptCapabilityError(partKind, mimeType, required, fallback string) error {
+	return &PromptCapabilityError{
+		PartKind:           partKind,
+		MIMEClass:          mimeType,
+		RequiredCapability: required,
+		Fallback:           fallback,
+	}
+}
+
+func mimeClass(mimeType string) string {
+	if mimeType == "" {
+		return "untyped"
+	}
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "image"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mimeType, "text/"):
+		return "text"
+	case strings.HasPrefix(mimeType, "application/"):
+		return "application"
+	default:
+		return "other"
+	}
+}
+
+func validatePromptBlocks(blocks []acp.ContentBlock, support promptSupport) error {
+	for i, block := range blocks {
+		switch {
+		case block.Text != nil, block.ResourceLink != nil:
+			continue
+		case block.Image != nil:
+			if !support.image {
+				return fmt.Errorf("validate prompt block %d: %w", i, newPromptCapabilityError("image", "image", "image", "ResourceLink or embeddedContext"))
+			}
+		case block.Audio != nil:
+			if !support.audio {
+				return fmt.Errorf("validate prompt block %d: %w", i, newPromptCapabilityError("audio", "audio", "audio", "ResourceLink or embeddedContext"))
+			}
+		case block.Resource != nil:
+			if !support.embeddedContext {
+				return fmt.Errorf("validate prompt block %d: %w", i, newPromptCapabilityError("resource", "embedded", "embeddedContext", "ResourceLink"))
+			}
+		default:
+			return fmt.Errorf("validate prompt block %d: content block is empty", i)
+		}
+	}
+	return nil
 }
 
 func resourceName(uri string) string {

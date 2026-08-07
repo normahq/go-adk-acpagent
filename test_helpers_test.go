@@ -52,7 +52,12 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	expectedAuthMethod := os.Getenv("GO_EXPECT_AUTH_METHOD")
 	supportSessionResume := os.Getenv("GO_SUPPORT_SESSION_RESUME") == "1"
 	supportLoadSession := os.Getenv("GO_SUPPORT_LOAD_SESSION") == "1"
-	supportPromptImage := os.Getenv("GO_SUPPORT_PROMPT_IMAGE") == "1"
+	promptImage := helperEnvBool("GO_PROMPT_CAP_IMAGE", true)
+	promptAudio := helperEnvBool("GO_PROMPT_CAP_AUDIO", true)
+	promptEmbeddedContext := helperEnvBool("GO_PROMPT_CAP_EMBEDDED_CONTEXT", true)
+	if raw, ok := os.LookupEnv("GO_SUPPORT_PROMPT_IMAGE"); ok {
+		promptImage = raw == "1"
+	}
 	expectedPromptsRaw := os.Getenv("GO_EXPECT_PROMPTS")
 	expectedPromptBlocksRaw := os.Getenv("GO_EXPECT_PROMPT_BLOCKS")
 	forceNewSessionID := os.Getenv("GO_FORCE_NEW_SESSION_ID")
@@ -273,18 +278,23 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				})
 				continue
 			}
-			initResp := helperInitializeResponse{ProtocolVersion: acp.ProtocolVersionNumber}
-			if supportSessionResume || supportLoadSession || supportPromptImage {
-				initResp.AgentCapabilities = &helperAgentCapabilities{}
-				if supportLoadSession {
-					initResp.AgentCapabilities.LoadSession = true
+			initResp := helperInitializeResponse{
+				ProtocolVersion: acp.ProtocolVersionNumber,
+				AgentCapabilities: &helperAgentCapabilities{
+					PromptCapabilities: acp.PromptCapabilities{
+						Audio:           promptAudio,
+						EmbeddedContext: promptEmbeddedContext,
+						Image:           promptImage,
+					},
+				},
+			}
+			if supportLoadSession {
+				initResp.AgentCapabilities.LoadSession = true
+			}
+			if supportSessionResume {
+				initResp.AgentCapabilities.SessionCapabilities = &helperSessionCapabilities{
+					Resume: &helperSessionResumeCapabilities{},
 				}
-				if supportSessionResume {
-					initResp.AgentCapabilities.SessionCapabilities = &helperSessionCapabilities{
-						Resume: &helperSessionResumeCapabilities{},
-					}
-				}
-				initResp.AgentCapabilities.PromptCapabilities.Image = supportPromptImage
 			}
 			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(initResp)})
 		case acp.AgentMethodAuthenticate:
@@ -751,6 +761,14 @@ func compactJSONForCompare(raw []byte) string {
 		return strings.TrimSpace(string(raw))
 	}
 	return out.String()
+}
+
+func helperEnvBool(name string, fallback bool) bool {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	return raw == "1" || strings.EqualFold(raw, "true")
 }
 
 type helperEnvelope struct {

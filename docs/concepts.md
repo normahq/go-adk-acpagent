@@ -55,15 +55,26 @@ does not project that replay into ADK-visible history.
 
 ## Structured User Content
 
-The adapter preserves the order of supported ADK user parts:
+The adapter preserves the order of supported ADK user parts and selects
+optional ACP blocks from the capabilities returned by `initialize`. Text and
+`ResourceLink` are ACP baseline content and require no capability flag.
 
-- text becomes an ACP text block;
-- inline image and audio bytes become base64 ACP image and audio blocks;
-- other inline bytes become an embedded blob resource with a stable
-  content-derived URI;
-- image file data becomes an ACP image URI block;
-- other file data becomes an ACP resource link with its display name and MIME
-  type.
+For the optional prompt blocks, conversion is deterministic:
+
+- inline image bytes become an ACP image block when `image` is advertised;
+  otherwise they become an embedded resource when `embeddedContext` is
+  advertised, or fail with a typed capability error;
+- inline audio bytes follow the same matrix using `audio`;
+- other inline bytes require `embeddedContext` and become an embedded blob
+  resource with a stable content-derived URI;
+- image file data becomes an ACP image URI block when `image` is advertised,
+  otherwise it becomes a baseline resource link;
+- other file data, including audio/voice files, becomes a baseline resource
+  link with its display name and MIME type.
+
+The adapter does not dereference file URIs or create temporary files. Callers
+that own durable attachment storage should prefer `FileData` so an agent with
+only baseline capabilities can consume the local reference.
 
 Unsupported function, tool, executable-code, or result parts fail explicitly
 instead of being silently discarded. First-turn instructions are prepended as

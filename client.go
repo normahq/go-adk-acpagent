@@ -96,6 +96,7 @@ type Client struct {
 	updates         chan ExtendedSessionNotification
 	deactivate      chan acp.SessionId
 	agentCaps       acp.AgentCapabilities
+	promptSupport   promptSupport
 
 	closed       chan struct{}
 	dispatchDone chan struct{}
@@ -238,6 +239,7 @@ func (c *Client) Initialize(ctx context.Context) (acp.InitializeResponse, error)
 	}
 	c.stateMu.Lock()
 	c.agentCaps = resp.AgentCapabilities
+	c.promptSupport = promptSupportFromCapabilities(resp.AgentCapabilities.PromptCapabilities)
 	c.stateMu.Unlock()
 	l.Debug().Int("protocol_version", int(resp.ProtocolVersion)).Msg("acp initialize succeeded")
 	return resp, nil
@@ -266,6 +268,12 @@ func (c *Client) PromptCapabilities() acp.PromptCapabilities {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	return c.agentCaps.PromptCapabilities
+}
+
+func (c *Client) promptSupportSnapshot() promptSupport {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.promptSupport
 }
 
 // Authenticate requests ACP authentication for a specific method.
@@ -714,6 +722,12 @@ func (c *Client) Prompt(ctx context.Context, sessionID, prompt string) (<-chan E
 func (c *Client) PromptWithContent(ctx context.Context, sessionID string, prompt []acp.ContentBlock) (<-chan ExtendedSessionNotification, <-chan PromptResult, error) {
 	if len(prompt) == 0 {
 		return nil, nil, errPromptContentReq
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, nil, errSessionIDRequired
+	}
+	if err := validatePromptBlocks(prompt, c.promptSupportSnapshot()); err != nil {
+		return nil, nil, err
 	}
 	return c.promptWithBlocks(ctx, sessionID, prompt, 0)
 }

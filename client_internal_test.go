@@ -99,6 +99,11 @@ func TestClientPromptWithContentValidation(t *testing.T) {
 	if _, _, err := client.PromptWithContent(t.Context(), " ", []acp.ContentBlock{acp.TextBlock("hi")}); !errors.Is(err, errSessionIDRequired) {
 		t.Fatalf("PromptWithContent(empty session) error = %v, want errSessionIDRequired", err)
 	}
+	client.promptSupport = promptSupport{}
+	_, _, err := client.PromptWithContent(t.Context(), "session-1", []acp.ContentBlock{acp.ImageBlock("aW1hZ2U=", "image/png")})
+	if !errors.Is(err, ErrPromptCapabilityUnsupported) {
+		t.Fatalf("PromptWithContent(unsupported image) error = %v, want ErrPromptCapabilityUnsupported", err)
+	}
 }
 
 func TestClientCloseErrorHelpers(t *testing.T) {

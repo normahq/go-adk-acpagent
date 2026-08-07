@@ -100,6 +100,7 @@ type Agent struct {
 	globalInstructionProvider InstructionProvider
 	logger                    logger
 	mcpServers                []acp.McpServer
+	promptSupport             promptSupport
 }
 
 type promptRunResult struct {
@@ -185,10 +186,12 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := client.Initialize(ctx); err != nil {
+	initResp, err := client.Initialize(ctx)
+	if err != nil {
 		err = fmt.Errorf("initialize acp client: %w", err)
 		return nil, closeClientAfterError(client, err, "close acp client after initialize failure")
 	}
+	promptSupport := promptSupportFromCapabilities(initResp.AgentCapabilities.PromptCapabilities)
 
 	mcpServers, err := convertMCPServers(cfg.MCPServers)
 	if err != nil {
@@ -208,6 +211,7 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 		globalInstructionProvider: cfg.GlobalInstructionProvider,
 		logger:                    l,
 		mcpServers:                mcpServers,
+		promptSupport:             promptSupport,
 	}
 	base, err := adkagent.New(adkagent.Config{
 		Name:                 cfg.Name,
@@ -236,7 +240,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 	return func(yield func(*session.Event, error) bool) {
 		baseLogger := a.invocationLogger(ctx)
 
-		prompt, err := promptContentBlocks(ctx.UserContent(), a.client.PromptCapabilities())
+		prompt, err := promptContentBlocks(ctx.UserContent(), a.promptSupport)
 		if err != nil {
 			yield(nil, err)
 			return

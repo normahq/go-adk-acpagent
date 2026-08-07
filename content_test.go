@@ -3,6 +3,7 @@ package acpagent
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -31,11 +32,7 @@ func TestPromptContentBlocksPreservesOrderAndMedia(t *testing.T) {
 		},
 	}
 
-	got, err := promptContentBlocks(content, acp.PromptCapabilities{
-		Audio:           true,
-		EmbeddedContext: true,
-		Image:           true,
-	})
+	got, err := promptContentBlocks(content, allPromptSupport())
 	if err != nil {
 		t.Fatalf("promptContentBlocks() error = %v", err)
 	}
@@ -83,7 +80,7 @@ func TestPromptContentBlocksUsesResourceFallbacks(t *testing.T) {
 		{FileData: &genai.FileData{FileURI: "opaque:"}},
 	}}
 
-	got, err := promptContentBlocks(content, acp.PromptCapabilities{EmbeddedContext: true})
+	got, err := promptContentBlocks(content, allPromptSupport())
 	if err != nil {
 		t.Fatalf("promptContentBlocks() error = %v", err)
 	}
@@ -95,6 +92,241 @@ func TestPromptContentBlocksUsesResourceFallbacks(t *testing.T) {
 	}
 	if got[2].ResourceLink == nil || got[2].ResourceLink.Name != "resource" {
 		t.Fatalf("fallback resource link name = %#v", got[2])
+	}
+}
+
+func TestPromptContentBlocksCapabilityMatrix(t *testing.T) {
+	const imageData = "image-bytes"
+	const audioData = "audio-bytes"
+
+	tests := []struct {
+		name       string
+		support    promptSupport
+		part       *genai.Part
+		want       string
+		wantErr    bool
+		wantMIME   string
+		wantReason string
+	}{
+		{
+			name:    "inline image native",
+			support: promptSupport{image: true},
+			part:    genai.NewPartFromBytes([]byte(imageData), "image/png"),
+			want:    "image",
+		},
+		{
+			name:       "inline image embedded fallback",
+			support:    promptSupport{embeddedContext: true},
+			part:       genai.NewPartFromBytes([]byte(imageData), "image/png"),
+			want:       "resource",
+			wantMIME:   "image/png",
+			wantReason: "embedded",
+		},
+		{
+			name:       "inline image unsupported",
+			support:    promptSupport{},
+			part:       genai.NewPartFromBytes([]byte(imageData), "image/png"),
+			wantErr:    true,
+			wantReason: "image",
+		},
+		{
+			name:    "inline audio native",
+			support: promptSupport{audio: true},
+			part:    genai.NewPartFromBytes([]byte(audioData), "audio/mpeg"),
+			want:    "audio",
+		},
+		{
+			name:       "inline audio embedded fallback",
+			support:    promptSupport{embeddedContext: true},
+			part:       genai.NewPartFromBytes([]byte(audioData), "audio/mpeg"),
+			want:       "resource",
+			wantMIME:   "audio/mpeg",
+			wantReason: "embedded",
+		},
+		{
+			name:       "inline audio unsupported",
+			support:    promptSupport{},
+			part:       genai.NewPartFromBytes([]byte(audioData), "audio/mpeg"),
+			wantErr:    true,
+			wantReason: "audio",
+		},
+		{
+			name:       "inline other embedded",
+			support:    promptSupport{embeddedContext: true},
+			part:       genai.NewPartFromBytes([]byte("document"), "application/pdf"),
+			want:       "resource",
+			wantMIME:   "application/pdf",
+			wantReason: "embedded",
+		},
+		{
+			name:       "inline other unsupported",
+			support:    promptSupport{},
+			part:       genai.NewPartFromBytes([]byte("document"), "application/pdf"),
+			wantErr:    true,
+			wantReason: "embeddedContext",
+		},
+		{
+			name:    "file image native",
+			support: promptSupport{image: true},
+			part:    genai.NewPartFromURI("file:///tmp/photo.jpg", "image/jpeg"),
+			want:    "image",
+		},
+		{
+			name:       "file image resource link fallback",
+			support:    promptSupport{},
+			part:       genai.NewPartFromURI("file:///tmp/photo.jpg", "image/jpeg"),
+			want:       "resource_link",
+			wantReason: "baseline",
+		},
+		{
+			name:       "file audio resource link baseline",
+			support:    promptSupport{},
+			part:       genai.NewPartFromURI("file:///tmp/voice.ogg", "audio/ogg"),
+			want:       "resource_link",
+			wantReason: "baseline",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := promptContentBlocks(&genai.Content{Parts: []*genai.Part{test.part}}, test.support)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("promptContentBlocks() error = nil, want capability error")
+				}
+				if !errors.Is(err, ErrPromptCapabilityUnsupported) {
+					t.Fatalf("promptContentBlocks() error = %v, want ErrPromptCapabilityUnsupported", err)
+				}
+				var capabilityErr *PromptCapabilityError
+				if !errors.As(err, &capabilityErr) {
+					t.Fatalf("promptContentBlocks() error = %v, want PromptCapabilityError", err)
+				}
+				if !strings.Contains(err.Error(), test.wantReason) {
+					t.Fatalf("capability error = %q, want %q", err, test.wantReason)
+				}
+				for _, secret := range []string{"image-bytes", "audio-bytes", "file:///tmp"} {
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("capability error leaked %q: %q", secret, err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("promptContentBlocks() error = %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("promptContentBlocks() returned %d blocks, want 1", len(got))
+			}
+			if gotKind := testContentBlockKind(got[0]); gotKind != test.want {
+				t.Fatalf("content block kind = %q, want %q", gotKind, test.want)
+			}
+			if test.wantMIME != "" {
+				if got[0].Resource == nil || got[0].Resource.Resource.BlobResourceContents == nil ||
+					got[0].Resource.Resource.BlobResourceContents.MimeType == nil ||
+					*got[0].Resource.Resource.BlobResourceContents.MimeType != test.wantMIME {
+					t.Fatalf("embedded resource MIME = %#v, want %q", got[0].Resource, test.wantMIME)
+				}
+			}
+		})
+	}
+}
+
+func TestValidatePromptBlocksUsesBaselineAndOptionalCapabilities(t *testing.T) {
+	baseline := []acp.ContentBlock{
+		acp.TextBlock("text"),
+		acp.ResourceLinkBlock("document", "file:///tmp/document.pdf"),
+	}
+	if err := validatePromptBlocks(baseline, promptSupport{}); err != nil {
+		t.Fatalf("validatePromptBlocks(baseline) error = %v", err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		block   acp.ContentBlock
+		support promptSupport
+		want    string
+	}{
+		{name: "image", block: acp.ImageBlock("aW1hZ2U=", "image/png"), support: promptSupport{}, want: "image"},
+		{name: "audio", block: acp.AudioBlock("YXVkaW8=", "audio/mpeg"), support: promptSupport{}, want: "audio"},
+		{name: "resource", block: acp.ResourceBlock(acp.EmbeddedResourceResource{TextResourceContents: &acp.TextResourceContents{Text: "context", Uri: "urn:test"}}), support: promptSupport{}, want: "embeddedContext"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validatePromptBlocks([]acp.ContentBlock{test.block}, test.support)
+			if err == nil || !errors.Is(err, ErrPromptCapabilityUnsupported) {
+				t.Fatalf("validatePromptBlocks() error = %v, want capability error", err)
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validatePromptBlocks() error = %q, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestValidatePromptBlocksAcceptsOptionalCapabilities(t *testing.T) {
+	blocks := []acp.ContentBlock{
+		acp.ImageBlock("aW1hZ2U=", "image/png"),
+		acp.AudioBlock("YXVkaW8=", "audio/mpeg"),
+		acp.ResourceBlock(acp.EmbeddedResourceResource{TextResourceContents: &acp.TextResourceContents{Text: "context", Uri: "urn:test"}}),
+	}
+	if err := validatePromptBlocks(blocks, allPromptSupport()); err != nil {
+		t.Fatalf("validatePromptBlocks(all capabilities) error = %v", err)
+	}
+}
+
+func TestPromptCapabilityErrorAndMIMEClassificationAreRedacted(t *testing.T) {
+	var nilError *PromptCapabilityError
+	if got := nilError.Error(); got != ErrPromptCapabilityUnsupported.Error() {
+		t.Fatalf("nil PromptCapabilityError.Error() = %q, want %q", got, ErrPromptCapabilityUnsupported)
+	}
+
+	for _, test := range []struct {
+		mime string
+		want string
+	}{
+		{mime: "", want: "untyped"},
+		{mime: "image/png", want: "image"},
+		{mime: "audio/ogg", want: "audio"},
+		{mime: "text/plain", want: "text"},
+		{mime: "application/pdf", want: "application"},
+		{mime: "private/secret", want: "other"},
+	} {
+		t.Run(test.want, func(t *testing.T) {
+			if got := mimeClass(test.mime); got != test.want {
+				t.Fatalf("mimeClass(%q) = %q, want %q", test.mime, got, test.want)
+			}
+		})
+	}
+
+	err := (&PromptCapabilityError{
+		PartKind:           "inline_data",
+		MIMEClass:          "other",
+		RequiredCapability: "embeddedContext",
+		Fallback:           "provide FileData",
+	}).Error()
+	if !strings.Contains(err, "inline_data") || !strings.Contains(err, "embeddedContext") || !strings.Contains(err, "provide FileData") {
+		t.Fatalf("capability error = %q, want structural details", err)
+	}
+	for _, secret := range []string{"private/secret", "file:///tmp", "secret-bytes"} {
+		if strings.Contains(err, secret) {
+			t.Fatalf("capability error leaked %q: %q", secret, err)
+		}
+	}
+}
+
+func testContentBlockKind(block acp.ContentBlock) string {
+	switch {
+	case block.Text != nil:
+		return "text"
+	case block.Image != nil:
+		return "image"
+	case block.Audio != nil:
+		return "audio"
+	case block.ResourceLink != nil:
+		return "resource_link"
+	case block.Resource != nil:
+		return "resource"
+	default:
+		return "unknown"
 	}
 }
 
@@ -129,11 +361,7 @@ func TestPromptContentBlocksRejectsInvalidParts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := promptContentBlocks(test.content, acp.PromptCapabilities{
-				Audio:           true,
-				EmbeddedContext: true,
-				Image:           true,
-			})
+			_, err := promptContentBlocks(test.content, allPromptSupport())
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("promptContentBlocks() error = %v, want containing %q", err, test.want)
 			}
@@ -143,11 +371,11 @@ func TestPromptContentBlocksRejectsInvalidParts(t *testing.T) {
 
 func TestPromptContentBlocksEnforcesAdvertisedCapabilities(t *testing.T) {
 	tests := []struct {
-		name         string
-		part         *genai.Part
-		capabilities acp.PromptCapabilities
-		wantType     string
-		wantErr      string
+		name     string
+		part     *genai.Part
+		support  promptSupport
+		wantType string
+		wantErr  string
 	}{
 		{
 			name:     "text is baseline",
@@ -166,13 +394,13 @@ func TestPromptContentBlocksEnforcesAdvertisedCapabilities(t *testing.T) {
 		{
 			name:    "image requires capability",
 			part:    genai.NewPartFromBytes([]byte("image"), "image/png"),
-			wantErr: "does not support image",
+			wantErr: "promptCapabilities.image",
 		},
 		{
-			name:         "image advertised",
-			part:         genai.NewPartFromBytes([]byte("image"), "image/png"),
-			capabilities: acp.PromptCapabilities{Image: true},
-			wantType:     "image",
+			name:     "image advertised",
+			part:     genai.NewPartFromBytes([]byte("image"), "image/png"),
+			support:  promptSupport{image: true},
+			wantType: "image",
 		},
 		{
 			name: "image file requires capability",
@@ -180,35 +408,35 @@ func TestPromptContentBlocksEnforcesAdvertisedCapabilities(t *testing.T) {
 				FileURI:  "file:///tmp/photo.png",
 				MIMEType: "image/png",
 			}},
-			wantErr: "does not support image",
+			wantType: "resource_link",
 		},
 		{
 			name:    "audio requires capability",
 			part:    genai.NewPartFromBytes([]byte("audio"), "audio/mpeg"),
-			wantErr: "does not support audio",
+			wantErr: "promptCapabilities.audio",
 		},
 		{
-			name:         "audio advertised",
-			part:         genai.NewPartFromBytes([]byte("audio"), "audio/mpeg"),
-			capabilities: acp.PromptCapabilities{Audio: true},
-			wantType:     "audio",
+			name:     "audio advertised",
+			part:     genai.NewPartFromBytes([]byte("audio"), "audio/mpeg"),
+			support:  promptSupport{audio: true},
+			wantType: "audio",
 		},
 		{
 			name:    "embedded resource requires capability",
 			part:    genai.NewPartFromBytes([]byte("document"), "application/pdf"),
-			wantErr: "does not support embedded resource",
+			wantErr: "promptCapabilities.embeddedContext",
 		},
 		{
-			name:         "embedded resource advertised",
-			part:         genai.NewPartFromBytes([]byte("document"), "application/pdf"),
-			capabilities: acp.PromptCapabilities{EmbeddedContext: true},
-			wantType:     "resource",
+			name:     "embedded resource advertised",
+			part:     genai.NewPartFromBytes([]byte("document"), "application/pdf"),
+			support:  promptSupport{embeddedContext: true},
+			wantType: "resource",
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			blocks, err := promptContentBlocks(&genai.Content{Parts: []*genai.Part{test.part}}, test.capabilities)
+			blocks, err := promptContentBlocks(&genai.Content{Parts: []*genai.Part{test.part}}, test.support)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 					t.Fatalf("promptContentBlocks() error = %v, want containing %q", err, test.wantErr)

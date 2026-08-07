@@ -27,7 +27,7 @@ want to run is exposed as an ACP command.
 | ACP lifecycle | Starts one ACP subprocess per agent instance and closes it on shutdown. |
 | Session binding | Creates, stores, reuses, and resumes ACP sessions through ADK session state. |
 | Event mapping | Converts ACP updates into ADK events and state deltas. |
-| Structured prompts | Preserves ordered ADK text, inline media/context, and file data as ACP content blocks while enforcing advertised prompt capabilities. |
+| Structured prompts | Preserves ordered ADK content and negotiates optional image/audio/embedded-resource blocks from ACP `initialize` capabilities; file data falls back to baseline resource links. |
 | Permissions | Maps protocol callbacks into ADK-facing `PermissionRequest` values handled by `PermissionHandler`. |
 | Session config | Applies ACP session-bound values such as model, mode, or thought level. |
 | MCP forwarding | Sends configured MCP servers to ACP session creation and resume calls. |
