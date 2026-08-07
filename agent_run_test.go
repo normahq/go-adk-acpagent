@@ -28,6 +28,7 @@ func TestAgentForwardsStructuredPromptAndInstructions(t *testing.T) {
 	a, err := NewWithContext(t.Context(), Config{
 		Command: helperCommandWithEnv(t, map[string]string{
 			"GO_EXPECT_PROMPT_BLOCKS": expectedPromptBlocksJSON(t, prompt),
+			"GO_SUPPORT_PROMPT_IMAGE": "1",
 		}),
 		WorkingDir:  t.TempDir(),
 		Instruction: "guide",
@@ -77,6 +78,7 @@ func TestAgentPreservesStructuredPromptDuringSessionRecovery(t *testing.T) {
 		Command: helperCommandWithEnv(t, map[string]string{
 			"GO_EXPECT_PROMPT_BLOCKS":               expectedPromptBlocksJSON(t, prompt, prompt),
 			"GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND": "1",
+			"GO_SUPPORT_PROMPT_IMAGE":               "1",
 		}),
 		WorkingDir: t.TempDir(),
 	})

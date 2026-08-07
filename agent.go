@@ -236,7 +236,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 	return func(yield func(*session.Event, error) bool) {
 		baseLogger := a.invocationLogger(ctx)
 
-		prompt, err := promptContentBlocks(ctx.UserContent())
+		prompt, err := promptContentBlocks(ctx.UserContent(), a.client.PromptCapabilities())
 		if err != nil {
 			yield(nil, err)
 			return

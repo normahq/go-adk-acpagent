@@ -31,7 +31,11 @@ func TestPromptContentBlocksPreservesOrderAndMedia(t *testing.T) {
 		},
 	}
 
-	got, err := promptContentBlocks(content)
+	got, err := promptContentBlocks(content, acp.PromptCapabilities{
+		Audio:           true,
+		EmbeddedContext: true,
+		Image:           true,
+	})
 	if err != nil {
 		t.Fatalf("promptContentBlocks() error = %v", err)
 	}
@@ -79,7 +83,7 @@ func TestPromptContentBlocksUsesResourceFallbacks(t *testing.T) {
 		{FileData: &genai.FileData{FileURI: "opaque:"}},
 	}}
 
-	got, err := promptContentBlocks(content)
+	got, err := promptContentBlocks(content, acp.PromptCapabilities{EmbeddedContext: true})
 	if err != nil {
 		t.Fatalf("promptContentBlocks() error = %v", err)
 	}
@@ -125,9 +129,100 @@ func TestPromptContentBlocksRejectsInvalidParts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := promptContentBlocks(test.content)
+			_, err := promptContentBlocks(test.content, acp.PromptCapabilities{
+				Audio:           true,
+				EmbeddedContext: true,
+				Image:           true,
+			})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("promptContentBlocks() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestPromptContentBlocksEnforcesAdvertisedCapabilities(t *testing.T) {
+	tests := []struct {
+		name         string
+		part         *genai.Part
+		capabilities acp.PromptCapabilities
+		wantType     string
+		wantErr      string
+	}{
+		{
+			name:     "text is baseline",
+			part:     genai.NewPartFromText("hello"),
+			wantType: "text",
+		},
+		{
+			name: "resource link is baseline",
+			part: &genai.Part{FileData: &genai.FileData{
+				DisplayName: "report.pdf",
+				FileURI:     "file:///tmp/report.pdf",
+				MIMEType:    "application/pdf",
+			}},
+			wantType: "resource_link",
+		},
+		{
+			name:    "image requires capability",
+			part:    genai.NewPartFromBytes([]byte("image"), "image/png"),
+			wantErr: "does not support image",
+		},
+		{
+			name:         "image advertised",
+			part:         genai.NewPartFromBytes([]byte("image"), "image/png"),
+			capabilities: acp.PromptCapabilities{Image: true},
+			wantType:     "image",
+		},
+		{
+			name: "image file requires capability",
+			part: &genai.Part{FileData: &genai.FileData{
+				FileURI:  "file:///tmp/photo.png",
+				MIMEType: "image/png",
+			}},
+			wantErr: "does not support image",
+		},
+		{
+			name:    "audio requires capability",
+			part:    genai.NewPartFromBytes([]byte("audio"), "audio/mpeg"),
+			wantErr: "does not support audio",
+		},
+		{
+			name:         "audio advertised",
+			part:         genai.NewPartFromBytes([]byte("audio"), "audio/mpeg"),
+			capabilities: acp.PromptCapabilities{Audio: true},
+			wantType:     "audio",
+		},
+		{
+			name:    "embedded resource requires capability",
+			part:    genai.NewPartFromBytes([]byte("document"), "application/pdf"),
+			wantErr: "does not support embedded resource",
+		},
+		{
+			name:         "embedded resource advertised",
+			part:         genai.NewPartFromBytes([]byte("document"), "application/pdf"),
+			capabilities: acp.PromptCapabilities{EmbeddedContext: true},
+			wantType:     "resource",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			blocks, err := promptContentBlocks(&genai.Content{Parts: []*genai.Part{test.part}}, test.capabilities)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("promptContentBlocks() error = %v, want containing %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("promptContentBlocks() error = %v", err)
+			}
+			if len(blocks) != 1 {
+				t.Fatalf("promptContentBlocks() returned %d blocks, want 1", len(blocks))
+			}
+			if got := promptBlockLogs(blocks)[0].Type; got != test.wantType {
+				t.Fatalf("prompt block type = %q, want %q", got, test.wantType)
 			}
 		})
 	}

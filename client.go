@@ -259,6 +259,15 @@ func (c *Client) SupportsSessionResume() bool {
 	return c.agentCaps.SessionCapabilities.Resume != nil
 }
 
+// PromptCapabilities returns the content types advertised by the initialized
+// ACP server. Text and resource links are baseline ACP content and are not
+// represented by flags in this value.
+func (c *Client) PromptCapabilities() acp.PromptCapabilities {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.agentCaps.PromptCapabilities
+}
+
 // Authenticate requests ACP authentication for a specific method.
 func (c *Client) Authenticate(ctx context.Context, methodID string) error {
 	if strings.TrimSpace(methodID) == "" {
