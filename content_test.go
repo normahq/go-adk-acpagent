@@ -61,9 +61,11 @@ func TestPromptContentBlocksPreservesOrderAndMedia(t *testing.T) {
 		*resource.Resource.BlobResourceContents.MimeType != "application/pdf" {
 		t.Fatalf("resource contents = %#v", resource.Resource.BlobResourceContents)
 	}
-	if got[4].Image == nil || got[4].Image.Uri == nil ||
-		*got[4].Image.Uri != "file:///tmp/photo.jpg" || got[4].Image.MimeType != "image/jpeg" {
-		t.Fatalf("image URI block = %#v", got[4])
+	if got[4].ResourceLink == nil || got[4].ResourceLink.Name != "photo.jpg" ||
+		got[4].ResourceLink.Uri != "file:///tmp/photo.jpg" ||
+		got[4].ResourceLink.MimeType == nil ||
+		*got[4].ResourceLink.MimeType != "image/jpeg" {
+		t.Fatalf("image resource link block = %#v", got[4])
 	}
 	if got[5].ResourceLink == nil || got[5].ResourceLink.Name != "report.pdf" ||
 		got[5].ResourceLink.Uri != "file:///tmp/report.pdf" ||
@@ -166,14 +168,8 @@ func TestPromptContentBlocksCapabilityMatrix(t *testing.T) {
 			wantReason: "embeddedContext",
 		},
 		{
-			name:    "file image native",
-			support: promptSupport{image: true},
-			part:    genai.NewPartFromURI("file:///tmp/photo.jpg", "image/jpeg"),
-			want:    "image",
-		},
-		{
-			name:       "file image resource link fallback",
-			support:    promptSupport{},
+			name:       "file image resource link with image advertised",
+			support:    promptSupport{image: true},
 			part:       genai.NewPartFromURI("file:///tmp/photo.jpg", "image/jpeg"),
 			want:       "resource_link",
 			wantReason: "baseline",

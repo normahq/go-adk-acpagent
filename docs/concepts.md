@@ -67,10 +67,10 @@ For the optional prompt blocks, conversion is deterministic:
 - inline audio bytes follow the same matrix using `audio`;
 - other inline bytes require `embeddedContext` and become an embedded blob
   resource with a stable content-derived URI;
-- image file data becomes an ACP image URI block when `image` is advertised,
-  otherwise it becomes a baseline resource link;
-- other file data, including audio/voice files, becomes a baseline resource
-  link with its display name and MIME type.
+- all file data, including image, audio/voice, and document files, becomes a
+  baseline resource link with its display name and MIME type. File references
+  never become ACP Image or Audio blocks, regardless of optional capabilities;
+  those blocks are reserved for inline bytes.
 
 The adapter does not dereference file URIs or create temporary files. Callers
 that own durable attachment storage should prefer `FileData` so an agent with

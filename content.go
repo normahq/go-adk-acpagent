@@ -112,7 +112,7 @@ func promptContentBlock(part *genai.Part, support promptSupport) (acp.ContentBlo
 	case "inline_data":
 		return inlineDataBlock(part.InlineData, support)
 	case "file_data":
-		return fileDataBlock(part.FileData, support)
+		return fileDataBlock(part.FileData)
 	default:
 		return acp.ContentBlock{}, false, fmt.Errorf("unsupported ADK content field %s", kinds[0])
 	}
@@ -198,7 +198,7 @@ func embeddedResourceBlock(data string, raw []byte, mimeType string) acp.Content
 	})
 }
 
-func fileDataBlock(file *genai.FileData, support promptSupport) (acp.ContentBlock, bool, error) {
+func fileDataBlock(file *genai.FileData) (acp.ContentBlock, bool, error) {
 	if file == nil {
 		return acp.ContentBlock{}, false, fmt.Errorf("file data is empty")
 	}
@@ -207,15 +207,6 @@ func fileDataBlock(file *genai.FileData, support promptSupport) (acp.ContentBloc
 		return acp.ContentBlock{}, false, fmt.Errorf("file URI is empty")
 	}
 	mimeType := strings.ToLower(strings.TrimSpace(file.MIMEType))
-	if strings.HasPrefix(mimeType, "image/") && support.image {
-		return acp.ContentBlock{
-			Image: &acp.ContentBlockImage{
-				Type:     "image",
-				MimeType: mimeType,
-				Uri:      &uri,
-			},
-		}, true, nil
-	}
 
 	name := strings.TrimSpace(file.DisplayName)
 	if name == "" {
