@@ -68,8 +68,10 @@ The adapter preserves the order of supported ADK user parts:
 Unsupported function, tool, executable-code, or result parts fail explicitly
 instead of being silently discarded. First-turn instructions are prepended as
 a separate text block, so media and resource parts remain structured during
-initial and recovered prompts. The selected ACP agent must advertise and
-implement any optional prompt capabilities it receives.
+initial and recovered prompts. Before `session/prompt`, the adapter rejects
+image, audio, and embedded resource blocks unless the ACP agent advertised the
+corresponding optional capability. Text and resource links remain baseline ACP
+content and do not require capability flags.
 
 ## Session Configuration
 

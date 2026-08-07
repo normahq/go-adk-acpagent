@@ -12,14 +12,14 @@ import (
 	"google.golang.org/genai"
 )
 
-func promptContentBlocks(content *genai.Content) ([]acp.ContentBlock, error) {
+func promptContentBlocks(content *genai.Content, capabilities acp.PromptCapabilities) ([]acp.ContentBlock, error) {
 	if content == nil {
 		return nil, fmt.Errorf("prompt content is empty")
 	}
 
 	blocks := make([]acp.ContentBlock, 0, len(content.Parts))
 	for i, part := range content.Parts {
-		block, include, err := promptContentBlock(part)
+		block, include, err := promptContentBlock(part, capabilities)
 		if err != nil {
 			return nil, fmt.Errorf("convert prompt part %d: %w", i, err)
 		}
@@ -33,7 +33,7 @@ func promptContentBlocks(content *genai.Content) ([]acp.ContentBlock, error) {
 	return blocks, nil
 }
 
-func promptContentBlock(part *genai.Part) (acp.ContentBlock, bool, error) {
+func promptContentBlock(part *genai.Part, capabilities acp.PromptCapabilities) (acp.ContentBlock, bool, error) {
 	if part == nil {
 		return acp.ContentBlock{}, false, fmt.Errorf("part is nil")
 	}
@@ -53,9 +53,9 @@ func promptContentBlock(part *genai.Part) (acp.ContentBlock, bool, error) {
 		}
 		return acp.TextBlock(part.Text), true, nil
 	case "inline_data":
-		return inlineDataBlock(part.InlineData)
+		return inlineDataBlock(part.InlineData, capabilities)
 	case "file_data":
-		return fileDataBlock(part.FileData)
+		return fileDataBlock(part.FileData, capabilities)
 	default:
 		return acp.ContentBlock{}, false, fmt.Errorf("unsupported ADK content field %s", kinds[0])
 	}
@@ -93,7 +93,7 @@ func promptPartKinds(part *genai.Part) []string {
 	return kinds
 }
 
-func inlineDataBlock(blob *genai.Blob) (acp.ContentBlock, bool, error) {
+func inlineDataBlock(blob *genai.Blob, capabilities acp.PromptCapabilities) (acp.ContentBlock, bool, error) {
 	if blob == nil || len(blob.Data) == 0 {
 		return acp.ContentBlock{}, false, fmt.Errorf("inline data is empty")
 	}
@@ -102,10 +102,19 @@ func inlineDataBlock(blob *genai.Blob) (acp.ContentBlock, bool, error) {
 	data := base64.StdEncoding.EncodeToString(blob.Data)
 	switch {
 	case strings.HasPrefix(mimeType, "image/"):
+		if !capabilities.Image {
+			return acp.ContentBlock{}, false, fmt.Errorf("acp agent does not support image prompt content")
+		}
 		return acp.ImageBlock(data, mimeType), true, nil
 	case strings.HasPrefix(mimeType, "audio/"):
+		if !capabilities.Audio {
+			return acp.ContentBlock{}, false, fmt.Errorf("acp agent does not support audio prompt content")
+		}
 		return acp.AudioBlock(data, mimeType), true, nil
 	default:
+		if !capabilities.EmbeddedContext {
+			return acp.ContentBlock{}, false, fmt.Errorf("acp agent does not support embedded resource prompt content")
+		}
 		sum := sha256.Sum256(blob.Data)
 		contents := &acp.BlobResourceContents{
 			Blob: data,
@@ -120,7 +129,7 @@ func inlineDataBlock(blob *genai.Blob) (acp.ContentBlock, bool, error) {
 	}
 }
 
-func fileDataBlock(file *genai.FileData) (acp.ContentBlock, bool, error) {
+func fileDataBlock(file *genai.FileData, capabilities acp.PromptCapabilities) (acp.ContentBlock, bool, error) {
 	if file == nil {
 		return acp.ContentBlock{}, false, fmt.Errorf("file data is empty")
 	}
@@ -130,6 +139,9 @@ func fileDataBlock(file *genai.FileData) (acp.ContentBlock, bool, error) {
 	}
 	mimeType := strings.ToLower(strings.TrimSpace(file.MIMEType))
 	if strings.HasPrefix(mimeType, "image/") {
+		if !capabilities.Image {
+			return acp.ContentBlock{}, false, fmt.Errorf("acp agent does not support image prompt content")
+		}
 		return acp.ContentBlock{
 			Image: &acp.ContentBlockImage{
 				Type:     "image",
