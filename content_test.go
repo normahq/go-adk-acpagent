@@ -97,6 +97,16 @@ func TestPromptContentBlocksUsesResourceFallbacks(t *testing.T) {
 	}
 }
 
+func TestFileDataBlockRejectsNil(t *testing.T) {
+	_, include, err := fileDataBlock(nil)
+	if err == nil || err.Error() != "file data is empty" {
+		t.Fatalf("fileDataBlock(nil) error = %v, want file data is empty", err)
+	}
+	if include {
+		t.Fatal("fileDataBlock(nil) include = true, want false")
+	}
+}
+
 func TestPromptContentBlocksCapabilityMatrix(t *testing.T) {
 	const imageData = "image-bytes"
 	const audioData = "audio-bytes"
