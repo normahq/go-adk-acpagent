@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/google/go-cmp/cmp"
 	"github.com/normahq/go-adk-acpagent/v2/acperror"
 )
 
@@ -148,7 +149,8 @@ func TestLoggerPassesCallerContextToHandler(t *testing.T) {
 func TestClientCreateSessionSetsConfigValue(t *testing.T) {
 	client, err := NewClient(t.Context(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
-			"GO_EXPECT_SESSION_MODEL": "openai/gpt-5.4",
+			"GO_EXPECT_SESSION_MODEL":  "openai/gpt-5.4",
+			"GO_CURRENT_SESSION_MODEL": "openai/gpt-5.3",
 		}),
 	})
 	if err != nil {
@@ -168,12 +170,68 @@ func TestClientCreateSessionSetsConfigValue(t *testing.T) {
 	}
 }
 
+func TestClientCreateSessionSkipsMatchingConfigValue(t *testing.T) {
+	client, err := NewClient(t.Context(), ClientConfig{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_DISABLE_SET_CONFIG_OPTION": "1",
+			"GO_EXPECT_SESSION_MODEL":      "openai/gpt-5.4",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer closeTestCloser(t, client)
+
+	if _, err := client.Initialize(t.Context()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	if _, err := client.CreateSession(t.Context(), t.TempDir(), []SessionConfigValue{{ID: "model", Value: "openai/gpt-5.4"}}, nil); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+}
+
+func TestClientApplyRequiredSessionConfigReturnsConfirmedPartialState(t *testing.T) {
+	client, err := NewClient(t.Context(), ClientConfig{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_CURRENT_SESSION_MODEL": "old-model",
+			"GO_EXPECT_SESSION_MODEL":  "new-model",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer closeTestCloser(t, client)
+
+	if _, err := client.Initialize(t.Context()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	resp, err := client.NewSessionWithMeta(t.Context(), t.TempDir(), nil, nil)
+	if err != nil {
+		t.Fatalf("NewSessionWithMeta() error = %v", err)
+	}
+	desired := []SessionConfigValue{
+		SelectSessionConfigValue("model", "new-model"),
+		SelectSessionConfigValue("reasoning_effort", "medium"),
+	}
+	confirmed, err := client.applySessionConfigRequired(
+		t.Context(), string(resp.SessionId), desired, resp.ConfigOptions, resp.Modes, desired,
+	)
+	if err == nil || !strings.Contains(err.Error(), `config option "reasoning_effort" is unavailable`) {
+		t.Fatalf("applySessionConfigRequired() error = %v", err)
+	}
+	want := []SessionConfigValue{SelectSessionConfigValue("model", "new-model")}
+	if diff := cmp.Diff(want, confirmed); diff != "" {
+		t.Fatalf("confirmed config mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestClientCreateSessionWarnsOnSetConfigOptionUnsupported(t *testing.T) {
 	var logBuf testLogBuffer
 	client, err := NewClient(t.Context(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
 			"GO_DISABLE_SET_CONFIG_OPTION": "1",
 			"GO_EXPECT_SESSION_MODEL":      "openai/gpt-5.4",
+			"GO_CURRENT_SESSION_MODEL":     "openai/gpt-5.3",
 		}),
 		Logger: testSlogLogger(&logBuf, slog.LevelWarn),
 	})
@@ -334,8 +392,9 @@ func TestClientCreateSessionIgnoresSetModeUnsupported(t *testing.T) {
 	var logBuf testLogBuffer
 	client, err := NewClient(t.Context(), ClientConfig{
 		Command: helperCommandWithEnv(t, map[string]string{
-			"GO_DISABLE_SET_MODE":    "1",
-			"GO_EXPECT_SESSION_MODE": "code",
+			"GO_DISABLE_SET_MODE":     "1",
+			"GO_EXPECT_SESSION_MODE":  "code",
+			"GO_CURRENT_SESSION_MODE": "ask",
 		}),
 		Logger: testSlogLogger(&logBuf, slog.LevelWarn),
 	})

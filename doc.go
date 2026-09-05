@@ -49,10 +49,9 @@
 //     history.
 //   - If `state[SessionStateKey].meta` is set, it is passed through to ACP
 //     session/new._meta and session/resume._meta.
-//   - If `state[SessionStateKey].config_values` is set, it overrides matching
-//     [Config.SessionConfig] defaults for that ADK session.
-//   - Overrides are read when the ACP session is first created for the ADK
-//     session. Subsequent changes do not rebind that existing ACP session.
+//   - `state[SessionStateKey].config_values` stores the last server-confirmed
+//     values. Explicit [Config.SessionConfig] entries take precedence for
+//     matching option IDs; persisted values are retained for omitted IDs.
 //
 // Invalid override values (for example, non-string `state[CWDStateKey]`,
 // non-object `state[SessionStateKey]`, non-object `state[SessionStateKey].meta`,

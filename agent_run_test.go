@@ -562,6 +562,140 @@ func TestAgentRecoversPromptFailureWithResumeOrNewSession(t *testing.T) {
 	}
 }
 
+func TestAgentReconfiguresResumedSessionFromExplicitConfig(t *testing.T) {
+	workingDir := t.TempDir()
+	expectedPrompts, err := json.Marshal([]string{"hello", "hello"})
+	if err != nil {
+		t.Fatalf("json.Marshal(expected prompts) error = %v", err)
+	}
+	a, err := NewWithContext(t.Context(), Config{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_SUPPORT_SESSION_RESUME":             "1",
+			"GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND": "1",
+			"GO_EXPECT_RESUME_SESSION_ID":           "saved-session",
+			"GO_CURRENT_SESSION_MODEL":              "old-model",
+			"GO_EXPECT_SESSION_MODEL":               "new-model",
+			"GO_EXPECT_PROMPTS":                     string(expectedPrompts),
+		}),
+		WorkingDir: workingDir,
+		SessionConfig: []SessionConfigValue{
+			SelectSessionConfigValue("model", "new-model"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+
+	r, sess := newRunnerWithACPState(t, a, workingDir, map[string]any{
+		"session_id": "saved-session",
+		"config_values": []any{
+			map[string]any{"id": "model", "value": "old-model"},
+		},
+	})
+	text, state := collectFinalTextAndSessionState(
+		t,
+		r.Run(t.Context(), "test-user", sess.ID(), genai.NewContentFromText("hello", genai.RoleUser), agent.RunConfig{}),
+	)
+	if text != "saved-session:hello" {
+		t.Fatalf("final text = %q, want saved-session:hello", text)
+	}
+	if got := selectConfigValueFromState(t, state, "model"); got != "new-model" {
+		t.Fatalf("persisted model = %q, want new-model", got)
+	}
+}
+
+func TestAgentReportsResumedSessionConfigFailureAsFinalEvent(t *testing.T) {
+	workingDir := t.TempDir()
+	expectedPrompts, err := json.Marshal([]string{"hello"})
+	if err != nil {
+		t.Fatalf("json.Marshal(expected prompts) error = %v", err)
+	}
+	a, err := NewWithContext(t.Context(), Config{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_SUPPORT_SESSION_RESUME":             "1",
+			"GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND": "1",
+			"GO_EXPECT_RESUME_SESSION_ID":           "saved-session",
+			"GO_CURRENT_SESSION_MODEL":              "old-model",
+			"GO_EXPECT_SESSION_MODEL":               "new-model",
+			"GO_DISABLE_SET_CONFIG_OPTION":          "1",
+			"GO_EXPECT_PROMPTS":                     string(expectedPrompts),
+		}),
+		WorkingDir: workingDir,
+		SessionConfig: []SessionConfigValue{
+			SelectSessionConfigValue("model", "new-model"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+
+	r, sess := newRunnerWithACPState(t, a, workingDir, map[string]any{
+		"session_id": "saved-session",
+		"config_values": []any{
+			map[string]any{"id": "model", "value": "old-model"},
+		},
+	})
+	var final *session.Event
+	for ev, runErr := range r.Run(t.Context(), "test-user", sess.ID(), genai.NewContentFromText("hello", genai.RoleUser), agent.RunConfig{}) {
+		if runErr != nil {
+			t.Fatalf("runner event error = %v", runErr)
+		}
+		if ev != nil && ev.TurnComplete {
+			final = ev
+		}
+	}
+	if final == nil {
+		t.Fatal("final turn-complete event missing")
+	}
+	if !strings.Contains(final.ErrorMessage, `set acp session config option "model"`) {
+		t.Fatalf("final error message = %q", final.ErrorMessage)
+	}
+	rawState, ok := final.Actions.StateDelta[SessionStateKey].(map[string]any)
+	if !ok {
+		t.Fatalf("final %s state type = %T", SessionStateKey, final.Actions.StateDelta[SessionStateKey])
+	}
+	if got := selectConfigValueFromState(t, rawState, "model"); got != "old-model" {
+		t.Fatalf("persisted model after failed update = %q, want old-model", got)
+	}
+}
+
+func newRunnerWithACPState(t *testing.T, a *Agent, workingDir string, acpState map[string]any) (*runnerpkg.Runner, session.Session) {
+	t.Helper()
+	service := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{AppName: "test-app", Agent: a, SessionService: service})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	created, err := service.Create(t.Context(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+		State: map[string]any{
+			CWDStateKey:     workingDir,
+			SessionStateKey: acpState,
+		},
+	})
+	if err != nil {
+		t.Fatalf("session.Create() error = %v", err)
+	}
+	return r, created.Session
+}
+
+func selectConfigValueFromState(t *testing.T, state map[string]any, id string) string {
+	t.Helper()
+	values, err := parseSessionConfigValues(state["config_values"])
+	if err != nil {
+		t.Fatalf("parse persisted config values: %v", err)
+	}
+	for _, value := range values {
+		if value.ID == id {
+			return value.Value
+		}
+	}
+	return ""
+}
+
 func TestAgentPersistsReplacementSessionIDAfterResumeFallback(t *testing.T) {
 	workingDir := t.TempDir()
 	sessionService := session.InMemoryService()

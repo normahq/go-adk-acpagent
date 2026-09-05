@@ -88,7 +88,8 @@ agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 })
 ```
 
-Set `SessionStateKey.config_values` to override defaults for one ADK session.
+Explicit `Config.SessionConfig` entries override persisted values with the same
+option ID. Persisted values are retained for IDs omitted from configuration.
 The adapter persists current values returned from ACP `session/new`,
 `session/resume`, `session/set_config_option`, and
 `session/update.config_option`. Select values are stored as
