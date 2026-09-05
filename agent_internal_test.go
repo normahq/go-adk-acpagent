@@ -955,9 +955,13 @@ func TestAgentSessionConfigErrorBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSessionConfig(configured values) error = %v", err)
 	}
-	wantConfiguredValues := []SessionConfigValue{{ID: "model", Value: "state-model"}, {ID: "mode", Value: "code"}}
+	wantConfiguredValues := []SessionConfigValue{{ID: "model", Value: "state-model"}}
 	if diff := cmp.Diff(wantConfiguredValues, configuredValues.configValues); diff != "" {
 		t.Errorf("resolveSessionConfig(configured values) configValues mismatch (-want +got):\n%s", diff)
+	}
+	wantDesiredValues := []SessionConfigValue{{ID: "model", Value: "configured-model"}, {ID: "mode", Value: "code"}}
+	if diff := cmp.Diff(wantDesiredValues, configuredValues.desiredConfigValues); diff != "" {
+		t.Errorf("resolveSessionConfig(configured values) desiredConfigValues mismatch (-want +got):\n%s", diff)
 	}
 
 	stateValues, err := (&Agent{workingDir: t.TempDir()}).resolveSessionConfig(testInvocationContext{session: created.Session})

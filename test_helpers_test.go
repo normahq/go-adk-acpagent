@@ -31,13 +31,25 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	expectedClientName := os.Getenv("GO_EXPECT_CLIENT_NAME")
 	expectedClientVersion := os.Getenv("GO_EXPECT_CLIENT_VERSION")
 	expectedSessionModel := os.Getenv("GO_EXPECT_SESSION_MODEL")
+	currentSessionModel := os.Getenv("GO_CURRENT_SESSION_MODEL")
+	if currentSessionModel == "" {
+		currentSessionModel = expectedSessionModel
+	}
 	expectedBooleanConfigID := os.Getenv("GO_EXPECT_BOOLEAN_CONFIG_ID")
 	expectedBooleanConfigValueRaw := os.Getenv("GO_EXPECT_BOOLEAN_CONFIG_VALUE")
+	currentBooleanConfigValueRaw := os.Getenv("GO_CURRENT_BOOLEAN_CONFIG_VALUE")
+	if currentBooleanConfigValueRaw == "" {
+		currentBooleanConfigValueRaw = expectedBooleanConfigValueRaw
+	}
 	expectedConfigID := os.Getenv("GO_EXPECT_CONFIG_ID")
 	if expectedConfigID == "" {
 		expectedConfigID = "model"
 	}
 	expectedSessionMode := os.Getenv("GO_EXPECT_SESSION_MODE")
+	currentSessionMode := os.Getenv("GO_CURRENT_SESSION_MODE")
+	if currentSessionMode == "" {
+		currentSessionMode = expectedSessionMode
+	}
 	advertiseModeConfigOption := os.Getenv("GO_ADVERTISE_MODE_CONFIG_OPTION") == "1"
 	expectedMCPServers := os.Getenv("GO_EXPECT_MCP_SERVERS")
 	expectedMCPServersRaw := os.Getenv("GO_EXPECT_MCP_SERVERS_RAW")
@@ -249,8 +261,8 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			JSONRPC: "2.0",
 			ID:      msg.ID,
 			Result: mustJSON(helperSessionRestoreResponse{
-				ConfigOptions: helperSessionConfigOptions(expectedSessionModel, expectedConfigID, expectedSessionMode, advertiseModeConfigOption, expectedBooleanConfigID, expectedBooleanConfigValueRaw),
-				Modes:         helperSessionModes(expectedSessionMode),
+				ConfigOptions: helperSessionConfigOptions(currentSessionModel, expectedConfigID, currentSessionMode, advertiseModeConfigOption, expectedBooleanConfigID, currentBooleanConfigValueRaw),
+				Modes:         helperSessionModes(currentSessionMode),
 			}),
 		})
 	}
@@ -399,8 +411,8 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				ID:      msg.ID,
 				Result: mustJSON(helperNewSessionResponse{
 					SessionID:     sessionID,
-					ConfigOptions: helperSessionConfigOptions(expectedSessionModel, expectedConfigID, expectedSessionMode, advertiseModeConfigOption, expectedBooleanConfigID, expectedBooleanConfigValueRaw),
-					Modes:         helperSessionModes(expectedSessionMode),
+					ConfigOptions: helperSessionConfigOptions(currentSessionModel, expectedConfigID, currentSessionMode, advertiseModeConfigOption, expectedBooleanConfigID, currentBooleanConfigValueRaw),
+					Modes:         helperSessionModes(currentSessionMode),
 				}),
 			})
 		case acp.AgentMethodSessionResume:

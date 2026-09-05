@@ -31,8 +31,9 @@ type Config struct {
 	// AfterAgentCallbacks are standard ADK lifecycle callbacks invoked after
 	// the ACP-backed run completes.
 	AfterAgentCallbacks []adkagent.AfterAgentCallback
-	// SessionConfig contains ACP session configuration values applied after
-	// session/new or session/resume.
+	// SessionConfig contains explicit ACP session configuration values applied
+	// after session/new or session/resume. Configured values take precedence
+	// over persisted values with the same option ID.
 	SessionConfig []SessionConfigValue
 	// Instruction is the optional instruction applied to each invocation.
 	Instruction string
@@ -254,6 +255,9 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			yield(nil, err)
 			return
 		}
+		if a.yieldSessionConfigError(ctx, logger, remote, yield) {
+			return
+		}
 		promptForRun := prompt
 		if remote.fresh {
 			promptForRun = prependInstructionsToContent(remote.firstPromptInstructions, prompt)
@@ -275,6 +279,9 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 				return
 			}
 			remote = recovered
+			if a.yieldSessionConfigError(ctx, logger, remote, yield) {
+				return
+			}
 			promptForRun = prompt
 			if remote.fresh {
 				promptForRun = prependInstructionsToContent(remote.firstPromptInstructions, prompt)
@@ -322,6 +329,19 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			return
 		}
 	}
+}
+
+func (a *Agent) yieldSessionConfigError(ctx adkagent.InvocationContext, logger logger, remote remoteSession, yield func(*session.Event, error) bool) bool {
+	if remote.configError == nil {
+		return false
+	}
+	ev := session.NewEvent(ctx, ctx.InvocationID())
+	ev.ErrorMessage = remote.configError.Error()
+	a.persistSessionStateDelta(ev, remote.id, remote.metaJSON, remote.configValues)
+	ev.TurnComplete = true
+	a.logADKEvent(logger, ev, "yielding acp session config error event")
+	yield(ev, nil)
+	return true
 }
 
 func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, remoteSessionID string, prompt []acp.ContentBlock, yield func(*session.Event, error) bool) (promptRunResult, error) {

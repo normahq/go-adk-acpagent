@@ -469,26 +469,37 @@ func (c *Client) CreateSessionWithMeta(ctx context.Context, cwd string, configVa
 }
 
 func (c *Client) applySessionConfig(ctx context.Context, sessionID string, values []SessionConfigValue, configOptions []acp.SessionConfigOption, modes *acp.SessionModeState) ([]SessionConfigValue, error) {
+	return c.applySessionConfigRequired(ctx, sessionID, values, configOptions, modes, nil)
+}
+
+func (c *Client) applySessionConfigRequired(ctx context.Context, sessionID string, values []SessionConfigValue, configOptions []acp.SessionConfigOption, modes *acp.SessionModeState, requiredValues []SessionConfigValue) ([]SessionConfigValue, error) {
 	l := c.loggerForContext(ctx)
 	currentOptions := configOptions
+	requiredIDs := sessionConfigValueIDs(requiredValues)
 	for _, value := range normalizeSessionConfigValues(values) {
 		optionID := strings.TrimSpace(value.ID)
 		option := findSessionConfigOption(currentOptions, optionID)
 		if option != nil {
+			if sessionConfigOptionMatches(value, *option) {
+				continue
+			}
 			req, err := buildSetSessionConfigOptionRequest(sessionID, optionID, value, *option)
 			if err != nil {
-				return nil, err
+				return collectSessionConfigValues(currentOptions, modes), err
 			}
 			resp, err := c.SetSessionConfigOption(ctx, req)
 			if err != nil {
 				if isACPMethodNotFoundError(err) {
+					if _, required := requiredIDs[optionID]; required {
+						return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("set acp session config option %q: %w", optionID, err)
+					}
 					l.Warn().
 						Str("acp_session_id", sessionID).
 						Str("config_option", optionID).
 						Msg("acp session/set_config_option unsupported; continuing")
 					continue
 				}
-				return nil, fmt.Errorf("set acp session config option %q: %w", optionID, err)
+				return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("set acp session config option %q: %w", optionID, err)
 			}
 			currentOptions = resp.ConfigOptions
 			continue
@@ -496,20 +507,29 @@ func (c *Client) applySessionConfig(ctx context.Context, sessionID string, value
 		if optionID == "mode" && modes != nil {
 			optionValue := strings.TrimSpace(value.Value)
 			if optionValue == "" {
-				return nil, fmt.Errorf("acp session mode value is required")
+				return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("acp session mode value is required")
+			}
+			if strings.TrimSpace(string(modes.CurrentModeId)) == optionValue {
+				continue
 			}
 			if err := c.SetSessionMode(ctx, sessionID, optionValue); err != nil {
 				if isACPMethodNotFoundError(err) {
+					if _, required := requiredIDs[optionID]; required {
+						return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("set acp session mode: %w", err)
+					}
 					l.Warn().
 						Str("acp_session_id", sessionID).
 						Str("mode", optionValue).
 						Msg("acp session/set_mode unsupported; continuing")
 					continue
 				}
-				return nil, fmt.Errorf("set acp session mode: %w", err)
+				return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("set acp session mode: %w", err)
 			}
 			modes.CurrentModeId = acp.SessionModeId(optionValue)
 			continue
+		}
+		if _, required := requiredIDs[optionID]; required {
+			return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("acp session config option %q is unavailable", optionID)
 		}
 		l.Warn().
 			Str("acp_session_id", sessionID).
@@ -517,6 +537,24 @@ func (c *Client) applySessionConfig(ctx context.Context, sessionID string, value
 			Msg("acp session config option unavailable; continuing")
 	}
 	return collectSessionConfigValues(currentOptions, modes), nil
+}
+
+func sessionConfigValueIDs(values []SessionConfigValue) map[string]struct{} {
+	ids := make(map[string]struct{}, len(values))
+	for _, value := range normalizeSessionConfigValues(values) {
+		ids[value.ID] = struct{}{}
+	}
+	return ids
+}
+
+func sessionConfigOptionMatches(value SessionConfigValue, option acp.SessionConfigOption) bool {
+	if option.Boolean != nil {
+		return value.BoolValue != nil && option.Boolean.CurrentValue == *value.BoolValue
+	}
+	if option.Select != nil {
+		return value.BoolValue == nil && strings.TrimSpace(string(option.Select.CurrentValue)) == strings.TrimSpace(value.Value)
+	}
+	return false
 }
 
 func hasSessionConfigOption(options []acp.SessionConfigOption, id string) bool {

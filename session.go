@@ -35,11 +35,12 @@ func BooleanSessionConfigValue(id string, value bool) SessionConfigValue {
 }
 
 type acpSessionConfig struct {
-	sessionID    string
-	configValues []SessionConfigValue
-	cwd          string
-	meta         map[string]any
-	metaJSON     string
+	sessionID           string
+	configValues        []SessionConfigValue
+	desiredConfigValues []SessionConfigValue
+	cwd                 string
+	meta                map[string]any
+	metaJSON            string
 }
 
 type remoteSession struct {
@@ -48,6 +49,7 @@ type remoteSession struct {
 	metaJSON                string
 	fresh                   bool
 	firstPromptInstructions string
+	configError             error
 }
 
 const (
@@ -129,24 +131,30 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 	if cfg.sessionID != "" && a.client.SupportsSessionResume() {
 		resumeResp, err := a.client.ResumeSessionWithMeta(logCtx, cfg.sessionID, cfg.cwd, a.mcpServers, cfg.meta)
 		if err == nil {
-			configValues, err := a.client.applySessionConfig(
+			configValues, configErr := a.client.applySessionConfigRequired(
 				logCtx,
 				cfg.sessionID,
-				cfg.configValues,
+				cfg.desiredConfigValues,
 				resumeResp.ConfigOptions,
 				resumeResp.Modes,
+				cfg.desiredConfigValues,
 			)
-			if err != nil {
-				return remoteSession{}, err
-			}
 			if len(configValues) > 0 {
 				cfg.configValues = configValues
 			}
-			a.logBoundRemoteSession(logger, "resumed acp session after prompt failure", cfg.sessionID, cfg.cwd, cfg.metaJSON)
 			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues); err != nil {
 				return remoteSession{}, err
 			}
-			return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}, nil
+			remote := remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}
+			if configErr != nil {
+				if errors.Is(configErr, context.Canceled) || errors.Is(configErr, context.DeadlineExceeded) {
+					return remoteSession{}, configErr
+				}
+				remote.configError = configErr
+				return remote, nil
+			}
+			a.logBoundRemoteSession(logger, "resumed acp session after prompt failure", cfg.sessionID, cfg.cwd, cfg.metaJSON)
+			return remote, nil
 		}
 		if isACPSessionAlreadyExistsError(err) {
 			logger.Debug().
@@ -187,30 +195,37 @@ func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 		return remoteSession{}, err
 	}
 	sessionID := string(resp.SessionId)
-	configValues, err := a.client.applySessionConfig(
+	valuesToApply := mergeSessionConfigValues(cfg.configValues, cfg.desiredConfigValues)
+	configValues, configErr := a.client.applySessionConfigRequired(
 		logCtx,
 		sessionID,
-		cfg.configValues,
+		valuesToApply,
 		resp.ConfigOptions,
 		resp.Modes,
+		cfg.desiredConfigValues,
 	)
-	if err != nil {
-		return remoteSession{}, err
-	}
 	if len(configValues) > 0 {
 		cfg.configValues = configValues
 	}
-	a.logBoundRemoteSession(logger, "created new acp session for adk session", sessionID, cfg.cwd, cfg.metaJSON)
 	if err := a.persistRemoteSessionBinding(ctx, sessionID, cfg.metaJSON, cfg.configValues); err != nil {
 		return remoteSession{}, err
 	}
-	return remoteSession{
+	remote := remoteSession{
 		id:                      sessionID,
 		configValues:            cfg.configValues,
 		metaJSON:                cfg.metaJSON,
 		fresh:                   true,
 		firstPromptInstructions: strings.TrimSpace(firstPromptInstructions),
-	}, nil
+	}
+	if configErr != nil {
+		if errors.Is(configErr, context.Canceled) || errors.Is(configErr, context.DeadlineExceeded) {
+			return remoteSession{}, configErr
+		}
+		remote.configError = configErr
+		return remote, nil
+	}
+	a.logBoundRemoteSession(logger, "created new acp session for adk session", sessionID, cfg.cwd, cfg.metaJSON)
+	return remote, nil
 }
 
 func (a *Agent) logBoundRemoteSession(logger logger, message, remoteSessionID, cwd, metaJSON string) {
@@ -440,8 +455,8 @@ func normalizeACPStateMetaJSONFromRaw(raw string) string {
 
 func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSessionConfig, error) {
 	cfg := acpSessionConfig{
-		cwd:          strings.TrimSpace(a.workingDir),
-		configValues: cloneSessionConfigValues(a.sessionConfig),
+		cwd:                 strings.TrimSpace(a.workingDir),
+		desiredConfigValues: cloneSessionConfigValues(a.sessionConfig),
 	}
 	rawCWD, err := ctx.Session().State().Get(CWDStateKey)
 	if err != nil {
@@ -491,7 +506,7 @@ func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSession
 		if err != nil {
 			return acpSessionConfig{}, fmt.Errorf("adk session state %q.config_values: %w", SessionStateKey, err)
 		}
-		cfg.configValues = mergeSessionConfigValues(cfg.configValues, configValues)
+		cfg.configValues = configValues
 	}
 	cfg, err = addReasoningEffortToSessionConfig(cfg, a.reasoningEffort)
 	if err != nil {
