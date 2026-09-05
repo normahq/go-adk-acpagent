@@ -327,6 +327,13 @@ func TestSessionConfigOptionHelpers(t *testing.T) {
 	}
 }
 
+func TestSessionConfigOptionMatchesUnsupportedOption(t *testing.T) {
+	t.Parallel()
+	if sessionConfigOptionMatches(SelectSessionConfigValue("model", "gpt"), acp.SessionConfigOption{}) {
+		t.Fatal("sessionConfigOptionMatches() = true for unsupported option")
+	}
+}
+
 func TestSessionConfigValueParsing(t *testing.T) {
 	t.Parallel()
 

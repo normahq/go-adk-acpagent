@@ -661,6 +661,42 @@ func TestAgentReportsResumedSessionConfigFailureAsFinalEvent(t *testing.T) {
 	}
 }
 
+func TestAgentReportsNewSessionConfigFailureAsFinalEvent(t *testing.T) {
+	a, err := NewWithContext(t.Context(), Config{
+		Command:    helperCommand(t),
+		WorkingDir: t.TempDir(),
+		SessionConfig: []SessionConfigValue{
+			SelectSessionConfigValue("reasoning_effort", "medium"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+
+	service := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{AppName: "test-app", Agent: a, SessionService: service})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	created, err := service.Create(t.Context(), &session.CreateRequest{AppName: "test-app", UserID: "test-user"})
+	if err != nil {
+		t.Fatalf("session.Create() error = %v", err)
+	}
+	var final *session.Event
+	for ev, runErr := range r.Run(t.Context(), "test-user", created.Session.ID(), genai.NewContentFromText("hello", genai.RoleUser), agent.RunConfig{}) {
+		if runErr != nil {
+			t.Fatalf("runner event error = %v", runErr)
+		}
+		if ev != nil && ev.TurnComplete {
+			final = ev
+		}
+	}
+	if final == nil || !strings.Contains(final.ErrorMessage, `config option "reasoning_effort" is unavailable`) {
+		t.Fatalf("final event = %#v", final)
+	}
+}
+
 func newRunnerWithACPState(t *testing.T, a *Agent, workingDir string, acpState map[string]any) (*runnerpkg.Runner, session.Session) {
 	t.Helper()
 	service := session.InMemoryService()
