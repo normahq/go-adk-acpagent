@@ -44,27 +44,40 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
 	"os"
 
 	acpagent "github.com/normahq/go-adk-acpagent/v2"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	ctx := context.Background()
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 
-	agentRuntime, err := acpagent.NewWithContext(context.Background(), acpagent.Config{
+	// 1. Create the ACP-backed ADK agent.
+	agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 		Command:    []string{"opencode", "acp"},
 		WorkingDir: "/workspace",
 		Logger:     logger,
 		Stderr:     io.Discard,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("create ACP agent: %w", err)
 	}
 	defer func() {
 		if err := agentRuntime.Close(); err != nil {
@@ -72,7 +85,42 @@ func main() {
 		}
 	}()
 
-	// Pass agentRuntime to an ADK runner.
+	// 2. Wire the agent into an ADK runner.
+	sessionService := session.InMemoryService()
+	r, err := runner.New(runner.Config{
+		AppName:        "opencode-app",
+		Agent:          agentRuntime,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		return fmt.Errorf("create runner: %w", err)
+	}
+
+	// 3. Create an ADK session.
+	sess, err := sessionService.Create(ctx, &session.CreateRequest{
+		AppName: "opencode-app",
+		UserID:  "user-1",
+	})
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+
+	// 4. Run a turn and stream events.
+	prompt := genai.NewContentFromText("Explain this codebase", genai.RoleUser)
+	for ev, err := range r.Run(ctx, "user-1", sess.Session.ID(), prompt, agent.RunConfig{}) {
+		if err != nil {
+			return fmt.Errorf("run turn: %w", err)
+		}
+		if ev.Content != nil {
+			for _, part := range ev.Content.Parts {
+				if part.Text != "" && !part.Thought {
+					fmt.Print(part.Text)
+				}
+			}
+		}
+	}
+	fmt.Println()
+	return nil
 }
 ```
 
