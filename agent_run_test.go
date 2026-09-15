@@ -69,6 +69,55 @@ func TestAgentForwardsStructuredPromptAndInstructions(t *testing.T) {
 	}
 }
 
+func TestAgentStopsAfterConsumerEndsIteration(t *testing.T) {
+	a, err := NewWithContext(t.Context(), Config{
+		Command:    helperCommand(t),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewWithContext() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+
+	sessionService := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{
+		AppName:        "test-app",
+		Agent:          a,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	sess, err := sessionService.Create(t.Context(), &session.CreateRequest{
+		AppName: "test-app",
+		UserID:  "test-user",
+	})
+	if err != nil {
+		t.Fatalf("session.Create() error = %v", err)
+	}
+
+	nonTerminalEventSeen := false
+	for ev, err := range r.Run(
+		t.Context(),
+		"test-user",
+		sess.Session.ID(),
+		genai.NewContentFromText("hello", genai.RoleUser),
+		agent.RunConfig{},
+	) {
+		if err != nil {
+			t.Fatalf("runner event error = %v", err)
+		}
+		if ev == nil || ev.TurnComplete || extractPromptText(ev.Content) == "" {
+			continue
+		}
+		nonTerminalEventSeen = true
+		break
+	}
+	if !nonTerminalEventSeen {
+		t.Fatal("expected a non-terminal ACP update event")
+	}
+}
+
 func TestAgentPreservesStructuredPromptDuringSessionRecovery(t *testing.T) {
 	image := []byte("image")
 	prompt := []acp.ContentBlock{
