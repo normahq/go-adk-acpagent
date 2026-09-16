@@ -109,6 +109,7 @@ type promptRunResult struct {
 	finalOutput        string
 	latestPlanSnapshot map[string]any
 	terminalError      *terminalPromptError
+	consumerStopped    bool
 }
 
 const (
@@ -272,6 +273,9 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		}
 
 		result, err := a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun, yield)
+		if result.consumerStopped {
+			return
+		}
 		if err != nil && isACPSessionNotFoundError(err) {
 			recovered, recoverErr := a.recoverRemoteSession(ctx, logCtx, logger, err)
 			if recoverErr != nil {
@@ -295,6 +299,9 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 				}
 			}
 			result, err = a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun, yield)
+			if result.consumerStopped {
+				return
+			}
 		}
 		if err != nil {
 			yield(nil, err)
@@ -383,6 +390,7 @@ func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Con
 			}
 			a.logADKEvent(logger, ev, "yielding adk event")
 			if !yield(ev, nil) {
+				out.consumerStopped = true
 				return out, nil
 			}
 		case result, ok := <-resultCh:
