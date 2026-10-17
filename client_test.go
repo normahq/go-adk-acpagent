@@ -1177,3 +1177,20 @@ func TestRequestPermissionUsesActivePromptContext(t *testing.T) {
 		t.Fatalf("handler context value = %q, want prompt-context", seen)
 	}
 }
+
+func TestQueryClosedIsNotAStaleSessionOutsideResume(t *testing.T) {
+	err := &acp.RequestError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    map[string]any{"details": "Query closed before response received"},
+	}
+	if isACPSessionNotFoundError(err) {
+		t.Fatal("a prompt-level query failure must not be classified as a stale session")
+	}
+	if !isACPResumeUnknownSessionError(err) {
+		t.Fatal("a resume that closes its query must be treated as an unknown session")
+	}
+	if isACPResumeUnknownSessionError(errors.New("query closed before response received")) {
+		t.Fatal("only ACP request errors qualify")
+	}
+}
