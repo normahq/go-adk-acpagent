@@ -706,6 +706,28 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				})})
 				continue
 			}
+			if responsePrompt == "terminal-request-error" || responsePrompt == "partial-terminal-request-error" {
+				if responsePrompt == "partial-terminal-request-error" {
+					writeUpdate(stdout, req.SessionID, "partial answer")
+				}
+				writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Error: &helperError{
+					Code:    -32603,
+					Message: "Provider request failed",
+					Data: map[string]any{
+						"provider_error": map[string]any{
+							"provider":    "codex",
+							"kind":        "rate_limited",
+							"code":        "rateLimitExceeded",
+							"scope":       "account",
+							"http_status": 429,
+							"retry_at":    int64(1_792_231_200),
+							"message":     "Provider rate limit reached",
+						},
+						"error": map[string]any{"additionalDetails": "must not reach ADK metadata"},
+					},
+				}})
+				continue
+			}
 			if responsePrompt == "retry-then-success" {
 				writePromptErrorNotification(stdout, req.SessionID, "Reconnecting... 1/5", true)
 				writePromptErrorNotification(stdout, req.SessionID, "Reconnecting... 2/5", true)

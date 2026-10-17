@@ -13,6 +13,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/google/go-cmp/cmp"
+	"github.com/normahq/go-adk-acpagent/v2/acperror"
 	"google.golang.org/adk/v2/agent"
 	runnerpkg "google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
@@ -1358,6 +1359,66 @@ func TestAgentRunTurnCompleteIncludesPromptMetaTerminalErrorWithoutVisibleReply(
 	}
 	if got := finalEvent.ErrorCode; got != "quota_exceeded" {
 		t.Fatalf("error code = %q, want quota_exceeded", got)
+	}
+}
+
+func TestAgentRunMapsProviderRequestErrorToTurnComplete(t *testing.T) {
+	tests := []struct {
+		name        string
+		prompt      string
+		wantContent string
+	}{
+		{name: "without output", prompt: "terminal-request-error"},
+		{name: "after partial output", prompt: "partial-terminal-request-error", wantContent: "partial answer"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			a, err := NewWithContext(t.Context(), Config{Command: helperCommand(t), WorkingDir: t.TempDir()})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			defer closeTestCloser(t, a)
+
+			sessionService := session.InMemoryService()
+			r, err := runnerpkg.New(runnerpkg.Config{AppName: "test-app", Agent: a, SessionService: sessionService})
+			if err != nil {
+				t.Fatalf("runner.New() error = %v", err)
+			}
+			sess, err := sessionService.Create(t.Context(), &session.CreateRequest{AppName: "test-app", UserID: "test-user"})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+
+			finalEvent := collectFinalEvent(t, r.Run(
+				t.Context(),
+				"test-user",
+				sess.Session.ID(),
+				genai.NewContentFromText(test.prompt, genai.RoleUser),
+				agent.RunConfig{},
+			))
+			if got := extractPromptText(finalEvent.Content); got != test.wantContent {
+				t.Errorf("final content = %q, want %q", got, test.wantContent)
+			}
+			if finalEvent.ErrorCode != "acp_request_error:-32603" {
+				t.Errorf("ErrorCode = %q, want acp_request_error:-32603", finalEvent.ErrorCode)
+			}
+			if finalEvent.ErrorMessage != "Provider request failed" {
+				t.Errorf("ErrorMessage = %q, want Provider request failed", finalEvent.ErrorMessage)
+			}
+			providerErr, ok := acperror.FromADKMetadata(finalEvent.CustomMetadata)
+			if !ok {
+				t.Fatalf("provider error metadata missing: %#v", finalEvent.CustomMetadata)
+			}
+			if providerErr.Kind != acperror.KindRateLimited || providerErr.Scope != acperror.ScopeAccount {
+				t.Errorf("provider error = %#v, want rate_limited/account", providerErr)
+			}
+			if providerErr.HTTPStatus == nil || *providerErr.HTTPStatus != 429 {
+				t.Errorf("HTTPStatus = %v, want 429", providerErr.HTTPStatus)
+			}
+			if _, leaked := finalEvent.CustomMetadata["error"]; leaked {
+				t.Fatalf("raw provider error leaked into ADK metadata: %#v", finalEvent.CustomMetadata)
+			}
+		})
 	}
 }
 

@@ -4,8 +4,12 @@ package acperror
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"strings"
+
+	acp "github.com/coder/acp-go-sdk"
 )
 
 const (
@@ -32,6 +36,9 @@ const (
 	KindRateLimited Kind = "rate_limited"
 	// KindUnavailable indicates the provider is temporarily unavailable.
 	KindUnavailable Kind = "unavailable"
+	// KindSessionExhausted indicates the current provider session has exhausted
+	// its per-session budget without affecting account health.
+	KindSessionExhausted Kind = "session_exhausted"
 	// KindInvalidRequest indicates the provider rejected the request shape or
 	// parameters.
 	KindInvalidRequest Kind = "invalid_request"
@@ -39,18 +46,43 @@ const (
 	KindUnknown Kind = "unknown"
 )
 
+// Scope identifies which provider boundary a failure affects.
+type Scope string
+
+const (
+	// ScopeRequest affects only the submitted request.
+	ScopeRequest Scope = "request"
+	// ScopeSession affects only the current provider session.
+	ScopeSession Scope = "session"
+	// ScopeProvider affects the selected provider service or member.
+	ScopeProvider Scope = "provider"
+	// ScopeAccount affects the configured provider account.
+	ScopeAccount Scope = "account"
+)
+
 // ProviderError is an ACP provider-agnostic classification of a provider-side
 // failure. It intentionally mirrors the ACP wire shape.
 type ProviderError struct {
 	// Kind classifies the provider failure.
 	Kind Kind `json:"kind"`
-	// Message contains provider-supplied diagnostic text.
+	// Message contains bounded diagnostic text suitable for policy logs.
 	Message string `json:"message,omitempty"`
+	// Code preserves the stable provider error discriminator when available.
+	Code string `json:"code,omitempty"`
+	// Scope identifies the request, session, provider, or account affected.
+	Scope Scope `json:"scope,omitempty"`
+	// HTTPStatus is the upstream HTTP status when the provider reported one.
+	HTTPStatus *int `json:"http_status,omitempty"`
+	// RetryAt is an absolute Unix timestamp backed by trustworthy reset data.
+	RetryAt *int64 `json:"retry_at,omitempty"`
 	// RequestID identifies the failed provider request when available.
 	RequestID string `json:"request_id,omitempty"`
 	// Provider names the upstream provider when available.
 	Provider string `json:"provider,omitempty"`
-	// Retryable reports whether retrying may succeed. Nil means unspecified.
+	// Retryable is retained for compatibility with older producers. Consumers
+	// should derive policy from Kind, Scope, and RetryAt.
+	//
+	// Deprecated: retry policy belongs to the consuming runtime.
 	Retryable *bool `json:"retryable,omitempty"`
 }
 
@@ -80,6 +112,18 @@ func (e *ProviderError) Metadata() map[string]any {
 	if e.Message != "" {
 		meta["message"] = e.Message
 	}
+	if e.Code != "" {
+		meta["code"] = e.Code
+	}
+	if e.Scope != "" {
+		meta["scope"] = string(e.Scope)
+	}
+	if e.HTTPStatus != nil {
+		meta["http_status"] = *e.HTTPStatus
+	}
+	if e.RetryAt != nil {
+		meta["retry_at"] = *e.RetryAt
+	}
 	if e.RequestID != "" {
 		meta["request_id"] = e.RequestID
 	}
@@ -90,6 +134,19 @@ func (e *ProviderError) Metadata() map[string]any {
 		meta["retryable"] = *e.Retryable
 	}
 	return meta
+}
+
+// FromRequestError extracts provider_error from an ACP JSON-RPC request error.
+func FromRequestError(err error) (*ProviderError, *acp.RequestError, bool) {
+	var reqErr *acp.RequestError
+	if !errors.As(err, &reqErr) || reqErr == nil {
+		return nil, nil, false
+	}
+	providerErr, ok := FromWireData(reqErr.Data)
+	if !ok {
+		return nil, reqErr, false
+	}
+	return providerErr, reqErr, true
 }
 
 // FromWireData extracts provider_error from JSON-RPC error data or ACP _meta.
@@ -157,8 +214,16 @@ func fromMap(m map[string]any) (*ProviderError, bool) {
 	err := &ProviderError{
 		Kind:      kind,
 		Message:   strings.TrimSpace(stringValue(m["message"])),
+		Code:      strings.TrimSpace(stringValue(m["code"])),
+		Scope:     Scope(strings.TrimSpace(stringValue(m["scope"]))),
 		RequestID: strings.TrimSpace(stringValue(m["request_id"])),
 		Provider:  strings.TrimSpace(stringValue(m["provider"])),
+	}
+	if status, ok := intValue(m["http_status"]); ok {
+		err.HTTPStatus = &status
+	}
+	if retryAt, ok := int64Value(m["retry_at"]); ok {
+		err.RetryAt = &retryAt
 	}
 	if retryable, ok := boolValue(m["retryable"]); ok {
 		err.Retryable = &retryable
@@ -175,9 +240,36 @@ func normalize(err *ProviderError) (*ProviderError, bool) {
 		return nil, false
 	}
 	err.Message = strings.TrimSpace(err.Message)
+	err.Code = strings.TrimSpace(err.Code)
+	err.Scope = Scope(strings.TrimSpace(string(err.Scope)))
 	err.RequestID = strings.TrimSpace(err.RequestID)
 	err.Provider = strings.TrimSpace(err.Provider)
 	return err, true
+}
+
+func intValue(value any) (int, bool) {
+	value64, ok := int64Value(value)
+	if !ok || value64 > int64(math.MaxInt) || value64 < int64(math.MinInt) {
+		return 0, false
+	}
+	return int(value64), true
+}
+
+func int64Value(value any) (int64, bool) {
+	switch value := value.(type) {
+	case int:
+		return int64(value), true
+	case int64:
+		return value, true
+	case float64:
+		if math.Trunc(value) == value && value <= math.MaxInt64 && value >= math.MinInt64 {
+			return int64(value), true
+		}
+	case json.Number:
+		parsed, err := value.Int64()
+		return parsed, err == nil
+	}
+	return 0, false
 }
 
 func asMap(value any) (map[string]any, bool) {
