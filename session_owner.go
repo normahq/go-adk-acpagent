@@ -59,22 +59,29 @@ func effectiveEnvironment(configured []string, workingDir string) []string {
 	return append(environment, "PWD="+dir)
 }
 
-// volatileEnvironment lists variables that describe a process, a login session
-// or a service manager rather than the backend profile, and change between
-// launches (the container id in HOSTNAME, the working directory, terminal and
-// multiplexer ids, systemd invocation ids, window-system ids). They are left
-// out of the owner identity, otherwise every restart would look like another
-// backend and forget its stored sessions. The list cannot be complete: a
-// deployment with launch-specific variables of its own pins the identity with
-// Config.SessionOwner.
+// volatileEnvironment lists variables that describe a process, a terminal, a
+// login session or a service manager launch and say nothing about which
+// accounts or credentials the backend uses (the container id in HOSTNAME, the
+// working directory, terminal and multiplexer ids, systemd invocation ids,
+// window-system ids). They are left out of the owner identity, otherwise every
+// restart would look like another backend and forget its stored sessions.
+//
+// Variables that route credentials stay in the identity even though some of
+// them change between launches: SSH_AUTH_SOCK and SSH_AGENT_PID (which ssh
+// agent and so which keys), DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR (which
+// user's secret service and runtime sockets), cloud and API credentials. A
+// restart that changes them forgets the stored session, which is safe; the
+// alternative would resume the session of another account. A deployment whose
+// credential variables change between launches pins the identity with
+// Config.SessionOwner. The list cannot be complete for the same reason.
 var volatileEnvironment = map[string]struct{}{
 	"_": {}, "PWD": {}, "OLDPWD": {}, "SHLVL": {}, "HOSTNAME": {}, "LINES": {}, "COLUMNS": {},
 	"TERM": {}, "COLORTERM": {}, "TERM_PROGRAM_VERSION": {}, "TERM_SESSION_ID": {}, "ITERM_SESSION_ID": {},
 	"ITERM_PROFILE": {}, "TMUX": {}, "TMUX_PANE": {}, "STY": {}, "GPG_TTY": {}, "WT_SESSION": {},
 	"SECURITYSESSIONID": {}, "COMMAND_MODE": {}, "__CF_USER_TEXT_ENCODING": {}, "LaunchInstanceID": {},
-	"SSH_AUTH_SOCK": {}, "SSH_AGENT_PID": {}, "SSH_CONNECTION": {}, "SSH_CLIENT": {}, "SSH_TTY": {},
+	"SSH_CONNECTION": {}, "SSH_CLIENT": {}, "SSH_TTY": {},
 	"TMPDIR": {}, "WINDOWID": {}, "DISPLAY": {}, "VSCODE_IPC_HOOK_CLI": {},
-	"DBUS_SESSION_BUS_ADDRESS": {}, "SESSION_MANAGER": {}, "XDG_SESSION_ID": {}, "XDG_RUNTIME_DIR": {},
+	"SESSION_MANAGER": {}, "XDG_SESSION_ID": {},
 	"INVOCATION_ID": {}, "JOURNAL_STREAM": {}, "SYSTEMD_EXEC_PID": {}, "NOTIFY_SOCKET": {},
 	"MAINPID": {}, "LISTEN_PID": {}, "LISTEN_FDS": {}, "LISTEN_FDNAMES": {},
 }

@@ -548,7 +548,7 @@ func TestOwnerIdentityIgnoresOnlyLaunchSpecificVariables(t *testing.T) {
 	want := agentOwnerKey("n", command, base, "/w")
 	for _, volatile := range []string{
 		"HOSTNAME=x", "PWD=/y", "SHLVL=3", "TERM=xterm", "TMUX=/tmp/tmux-1/default,1,0", "INVOCATION_ID=abc",
-		"JOURNAL_STREAM=8:1", "XPC_SERVICE_NAME=foo", "XPC_FLAGS=0x0", "SSH_AUTH_SOCK=/tmp/agent", "TERM_SESSION_ID=w0",
+		"JOURNAL_STREAM=8:1", "XPC_SERVICE_NAME=foo", "XPC_FLAGS=0x0", "SSH_CONNECTION=1.2.3.4 5 6.7.8.9 22", "TERM_SESSION_ID=w0",
 	} {
 		if got := agentOwnerKey("n", command, append(slices.Clone(base), volatile), "/w"); got != want {
 			t.Errorf("%s changed the identity", volatile)
@@ -606,5 +606,41 @@ func TestSessionOwnerPinsTheIdentity(t *testing.T) {
 	defer closeTestCloser(t, derived)
 	if derived.ownerID() == "" || derived.ownerID() == "codex-work" {
 		t.Fatalf("without SessionOwner the identity is derived, got %q", derived.ownerID())
+	}
+}
+
+func TestCredentialRoutingVariablesStayInTheOwnerIdentity(t *testing.T) {
+	command := []string{"agent", "acp"}
+	base := []string{"HOME=/home/me"}
+	want := agentOwnerKey("n", command, base, "/w")
+	for _, routing := range []string{
+		"SSH_AUTH_SOCK=/tmp/agent-b", "SSH_AGENT_PID=4242",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus", "XDG_RUNTIME_DIR=/run/user/1001",
+		"AWS_PROFILE=other", "AWS_SESSION_TOKEN=t", "GITHUB_TOKEN=t", "OPENAI_API_KEY=k",
+	} {
+		if got := agentOwnerKey("n", command, append(slices.Clone(base), routing), "/w"); got == want {
+			t.Errorf("%s does not change the identity, so another account could resume the session", routing)
+		}
+	}
+}
+
+func TestAnotherSSHAgentIsADifferentOwner(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/agent-work.sock")
+	work := newBackendAgent(t, dir, nil)
+	defer closeTestCloser(t, work)
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/agent-personal.sock")
+	personal := newBackendAgent(t, dir, nil)
+	defer closeTestCloser(t, personal)
+	if work.ownerID() == personal.ownerID() {
+		t.Fatalf("agents using another ssh agent share owner %q", work.ownerID())
+	}
+	state := map[string]any{"session_id": "work-session", "owner": work.ownerID()}
+	cfg, err := personal.resolveSessionConfig(newStateContext(t, map[string]any{SessionStateKey: state, CWDStateKey: t.TempDir()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.sessionID != "" {
+		t.Fatalf("the agent with another ssh agent resumed the session %q", cfg.sessionID)
 	}
 }
