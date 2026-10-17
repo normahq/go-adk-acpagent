@@ -1,6 +1,9 @@
 package acpagent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"strings"
 
 	"google.golang.org/adk/v2/session"
@@ -16,12 +19,21 @@ const (
 	parkedStateField = "parked"
 )
 
+// agentOwnerKey identifies an agent in the shared ACP session state by its name
+// and the command that starts its backend. The name alone is not enough: agents
+// that keep the default name would all look like the same owner. A changed
+// command is a different backend, so its stored session is not reused.
+func agentOwnerKey(name string, command []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(command, "\x00")))
+	return strings.TrimSpace(name) + ":" + hex.EncodeToString(sum[:4])
+}
+
 // ownerID identifies this agent in the shared ACP session state.
 func (a *Agent) ownerID() string {
-	if a == nil || a.Agent == nil {
+	if a == nil {
 		return ""
 	}
-	return strings.TrimSpace(a.Name())
+	return a.ownerKey
 }
 
 // ownedState stamps state with this agent as the owner of its session id and
@@ -33,6 +45,7 @@ func (a *Agent) ownedState(sess session.Session, state map[string]any) map[strin
 	if owner == "" || state == nil {
 		return state
 	}
+	state = cloneAnyMap(state)
 	parked := map[string]any{}
 	if current := liveACPState(sess); current != nil {
 		if rawParked, ok := current[parkedStateField].(map[string]any); ok {
@@ -46,6 +59,9 @@ func (a *Agent) ownedState(sess session.Session, state map[string]any) map[strin
 			slot := map[string]any{"session_id": currentID}
 			if values, ok := current["config_values"]; ok {
 				slot["config_values"] = values
+			}
+			if indeterminate, _ := current["attachment_indeterminate"].(bool); indeterminate {
+				slot["attachment_indeterminate"] = true
 			}
 			parked[currentOwner] = slot
 		}
@@ -77,7 +93,14 @@ func liveACPState(sess session.Session) map[string]any {
 // created them; the meta stays shared. A slot parked for this agent is
 // restored.
 func (a *Agent) applyForeignOwnership(cfg acpSessionConfig, state map[string]any) (acpSessionConfig, error) {
-	owner, _ := state[ownerStateField].(string)
+	owner := ""
+	if rawOwner, ok := state[ownerStateField]; ok {
+		var isString bool
+		owner, isString = rawOwner.(string)
+		if !isString {
+			return acpSessionConfig{}, fmt.Errorf("%s must be a string; got %T", ownerStateField, rawOwner)
+		}
+	}
 	if owner == "" || owner == a.ownerID() {
 		return cfg, nil
 	}
@@ -90,14 +113,18 @@ func (a *Agent) applyForeignOwnership(cfg acpSessionConfig, state map[string]any
 	if strings.TrimSpace(sessionID) == "" {
 		return cfg, nil
 	}
-	cfg.sessionID = strings.TrimSpace(sessionID)
+	var values []SessionConfigValue
 	if rawValues, ok := slot["config_values"]; ok {
-		values, err := parseSessionConfigValues(rawValues)
+		parsed, err := parseSessionConfigValues(rawValues)
 		if err != nil {
-			return acpSessionConfig{}, err
+			// A damaged slot must not wedge the agent: start a new session.
+			return cfg, nil
 		}
-		cfg.configValues = values
+		values = parsed
 	}
+	cfg.sessionID = strings.TrimSpace(sessionID)
+	cfg.configValues = values
+	cfg.attachmentIndeterminate, _ = slot["attachment_indeterminate"].(bool)
 	return cfg, nil
 }
 

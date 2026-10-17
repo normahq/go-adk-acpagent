@@ -36,7 +36,8 @@
 //   - As soon as the adapter binds a remote ACP session, it stores the
 //     canonical ACP session ID in the live ADK session state under
 //     `state[SessionStateKey]`.
-//   - The adapter records its name under `state[SessionStateKey].owner` and only
+//   - The adapter records its identity, its name plus a fingerprint of the
+//     command that starts its backend, under `state[SessionStateKey].owner` and only
 //     resumes a session id it created. When several agents share one ADK
 //     session, for example in a failover pool, the id and config values of
 //     another agent are never used: the sessions of other agents are kept under

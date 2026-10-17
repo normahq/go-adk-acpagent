@@ -38,6 +38,7 @@ func newStateContext(t *testing.T, state map[string]any) testInvocationContext {
 func TestResolveSessionConfigHonorsSessionOwner(t *testing.T) {
 	a := newOwnedTestAgent(t, "claude", nil)
 	defer closeTestCloser(t, a)
+	me := a.ownerID()
 	testCases := []struct {
 		name      string
 		state     map[string]any
@@ -52,7 +53,7 @@ func TestResolveSessionConfigHonorsSessionOwner(t *testing.T) {
 		},
 		{
 			name:   "own session",
-			state:  map[string]any{"session_id": "own-1", "owner": "claude"},
+			state:  map[string]any{"session_id": "own-1", "owner": me},
 			wantID: "own-1",
 		},
 		{
@@ -72,7 +73,7 @@ func TestResolveSessionConfigHonorsSessionOwner(t *testing.T) {
 				"session_id": "codex-1",
 				"owner":      "codex",
 				"parked": map[string]any{
-					"claude": map[string]any{
+					me: map[string]any{
 						"session_id":    "claude-7",
 						"config_values": []any{map[string]any{"id": "model", "value": "sonnet"}},
 					},
@@ -106,16 +107,20 @@ func TestOwnedStateParksForeignSessionAndRestoresOwn(t *testing.T) {
 	defer closeTestCloser(t, claude)
 	codex := newOwnedTestAgent(t, "codex", nil)
 	defer closeTestCloser(t, codex)
-	ctx := newStateContext(t, map[string]any{SessionStateKey: map[string]any{"session_id": "codex-1", "owner": "codex"}})
+	ctx := newStateContext(t, map[string]any{SessionStateKey: map[string]any{"session_id": "codex-1", "owner": codex.ownerID()}})
 
-	got := claude.ownedState(ctx.session, map[string]any{"session_id": "claude-1"})
+	input := map[string]any{"session_id": "claude-1"}
+	got := claude.ownedState(ctx.session, input)
 	want := map[string]any{
 		"session_id": "claude-1",
-		"owner":      "claude",
-		"parked":     map[string]any{"codex": map[string]any{"session_id": "codex-1"}},
+		"owner":      claude.ownerID(),
+		"parked":     map[string]any{codex.ownerID(): map[string]any{"session_id": "codex-1"}},
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("claude takes over (-want +got):\n%s", diff)
+	}
+	if _, stamped := input["owner"]; stamped {
+		t.Fatal("ownedState must not mutate its input")
 	}
 	if err := ctx.session.State().Set(SessionStateKey, got); err != nil {
 		t.Fatal(err)
@@ -124,8 +129,8 @@ func TestOwnedStateParksForeignSessionAndRestoresOwn(t *testing.T) {
 	back := codex.ownedState(ctx.session, map[string]any{"session_id": "codex-1"})
 	wantBack := map[string]any{
 		"session_id": "codex-1",
-		"owner":      "codex",
-		"parked":     map[string]any{"claude": map[string]any{"session_id": "claude-1"}},
+		"owner":      codex.ownerID(),
+		"parked":     map[string]any{claude.ownerID(): map[string]any{"session_id": "claude-1"}},
 	}
 	if diff := cmp.Diff(wantBack, back); diff != "" {
 		t.Fatalf("codex takes back its session (-want +got):\n%s", diff)
@@ -133,6 +138,98 @@ func TestOwnedStateParksForeignSessionAndRestoresOwn(t *testing.T) {
 	again := codex.ownedState(ctx.session, map[string]any{"session_id": "codex-1"})
 	if diff := cmp.Diff(back, again); diff != "" {
 		t.Fatalf("stamping is not idempotent (-want +got):\n%s", diff)
+	}
+}
+
+func TestUnnamedAgentsWithDifferentBackendsAreDistinctOwners(t *testing.T) {
+	first := newOwnedTestAgent(t, "", map[string]string{"GO_SUPPORT_SESSION_RESUME": "1"})
+	defer closeTestCloser(t, first)
+	second := newOwnedTestAgent(t, "", map[string]string{"GO_SUPPORT_SESSION_RESUME": "1", "GO_FAIL_RESUME_QUERY_CLOSED": "1"})
+	defer closeTestCloser(t, second)
+	if first.Name() != second.Name() {
+		t.Fatalf("names differ (%q, %q): the test needs the default name", first.Name(), second.Name())
+	}
+	if first.ownerID() == second.ownerID() {
+		t.Fatalf("agents with different backends share the owner %q", first.ownerID())
+	}
+	state := map[string]any{"session_id": "x", "owner": first.ownerID(), "attachment_indeterminate": true}
+	cfg, err := second.resolveSessionConfig(newStateContext(t, map[string]any{SessionStateKey: state, CWDStateKey: t.TempDir()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.sessionID != "" || cfg.attachmentIndeterminate {
+		t.Fatalf("a different backend adopted session %q (indeterminate=%v)", cfg.sessionID, cfg.attachmentIndeterminate)
+	}
+}
+
+func TestParkedSlotKeepsAttachmentIndeterminate(t *testing.T) {
+	first := newOwnedTestAgent(t, "first", nil)
+	defer closeTestCloser(t, first)
+	second := newOwnedTestAgent(t, "second", nil)
+	defer closeTestCloser(t, second)
+	ctx := newStateContext(t, map[string]any{SessionStateKey: map[string]any{
+		"session_id": "first-1", "owner": first.ownerID(), "attachment_indeterminate": true,
+	}})
+
+	parked := second.ownedState(ctx.session, map[string]any{"session_id": "second-1"})
+	if err := ctx.session.State().Set(SessionStateKey, parked); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.session.State().Set(CWDStateKey, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := first.resolveSessionConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.sessionID != "first-1" || !cfg.attachmentIndeterminate {
+		t.Fatalf("restored slot lost its in-doubt flag: id=%q indeterminate=%v", cfg.sessionID, cfg.attachmentIndeterminate)
+	}
+}
+
+func TestDamagedOwnershipStateIsHandled(t *testing.T) {
+	a := newOwnedTestAgent(t, "me", nil)
+	defer closeTestCloser(t, a)
+	resolve := func(state map[string]any) (acpSessionConfig, error) {
+		return a.resolveSessionConfig(newStateContext(t, map[string]any{SessionStateKey: state, CWDStateKey: t.TempDir()}))
+	}
+	if _, err := resolve(map[string]any{"session_id": "x", "owner": 5}); err == nil {
+		t.Fatal("a non-string owner must be an error, not silently adopted")
+	}
+	cfg, err := resolve(map[string]any{
+		"session_id": "other-1",
+		"owner":      "other:00000000",
+		"parked":     map[string]any{a.ownerID(): map[string]any{"session_id": "mine-1", "config_values": "broken"}},
+	})
+	if err != nil {
+		t.Fatalf("a damaged parked slot must not wedge the agent: %v", err)
+	}
+	if cfg.sessionID != "" {
+		t.Fatalf("a damaged slot must lead to a new session, got %q", cfg.sessionID)
+	}
+}
+
+func TestStampOwnershipCoversPartialConfigAndModeEvents(t *testing.T) {
+	first := newOwnedTestAgent(t, "first", nil)
+	defer closeTestCloser(t, first)
+	second := newOwnedTestAgent(t, "second", nil)
+	defer closeTestCloser(t, second)
+	ctx := newStateContext(t, map[string]any{SessionStateKey: map[string]any{"session_id": "first-1", "owner": first.ownerID()}})
+
+	var got *session.Event
+	yield := second.stampOwnership(ctx, func(ev *session.Event, _ error) bool { got = ev; return true })
+	update := session.NewEvent(ctx, "inv")
+	update.Partial = true
+	update.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues("second-1", "", []SessionConfigValue{{ID: "mode", Value: "build"}})
+	yield(update, nil)
+
+	state, _ := got.Actions.StateDelta[SessionStateKey].(map[string]any)
+	if state["owner"] != second.ownerID() {
+		t.Fatalf("partial update event is not stamped: %v", state)
+	}
+	parked, _ := state["parked"].(map[string]any)
+	if _, ok := parked[first.ownerID()]; !ok {
+		t.Fatalf("partial update event dropped the parked slot: %v", state)
 	}
 }
 
@@ -148,7 +245,8 @@ func TestAgentsSharingASessionNeverResumeEachOthersSession(t *testing.T) {
 	defer closeTestCloser(t, agentB)
 
 	svc := session.InMemoryService()
-	created, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "owner", UserID: "u"})
+	meta := map[string]any{"codex": map[string]any{"approvalMode": "manual"}}
+	created, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "owner", UserID: "u", State: map[string]any{SessionStateKey: map[string]any{"meta": meta}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,12 +261,15 @@ func TestAgentsSharingASessionNeverResumeEachOthersSession(t *testing.T) {
 
 	run(agentA, "one")
 	stateB := run(agentB, "two")
-	if stateB["owner"] != "agent-b" {
-		t.Fatalf("owner after takeover = %v, want agent-b", stateB["owner"])
+	if stateB["owner"] != agentB.ownerID() {
+		t.Fatalf("owner after takeover = %v, want %s", stateB["owner"], agentB.ownerID())
 	}
 	parked, _ := stateB["parked"].(map[string]any)
-	if slot, _ := parked["agent-a"].(map[string]any); slot["session_id"] == nil {
+	if slot, _ := parked[agentA.ownerID()].(map[string]any); slot["session_id"] == nil {
 		t.Fatalf("agent-a's session must be parked, got %v", stateB)
+	}
+	if diff := cmp.Diff(meta, stateB["meta"]); diff != "" {
+		t.Fatalf("meta must stay shared across the takeover (-want +got):\n%s", diff)
 	}
 	run(agentA, "three")
 
