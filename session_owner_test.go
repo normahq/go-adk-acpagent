@@ -3,6 +3,7 @@ package acpagent
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -341,7 +342,7 @@ func TestResetDoesNotBringBackAParkedSession(t *testing.T) {
 }
 
 func TestParkedSessionsAreBounded(t *testing.T) {
-	var tick time.Time = time.Date(2026, time.October, 17, 0, 0, 0, 0, time.UTC)
+	tick := time.Date(2026, time.October, 17, 0, 0, 0, 0, time.UTC)
 	previous := parkNow
 	parkNow = func() time.Time { tick = tick.Add(time.Minute); return tick }
 	t.Cleanup(func() { parkNow = previous })
@@ -451,5 +452,69 @@ func TestSameNameAndCommandInAnotherWorkingDirectoryIsADifferentOwner(t *testing
 	defer closeTestCloser(t, second)
 	if first.ownerID() == second.ownerID() {
 		t.Fatalf("identical name and command in another working directory share the owner %q", first.ownerID())
+	}
+}
+
+func TestInheritedEnvironmentIsPartOfTheOwnerIdentity(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", "/profiles/a")
+	profileA := newBackendAgent(t, dir, nil)
+	defer closeTestCloser(t, profileA)
+	t.Setenv("CODEX_HOME", "/profiles/b")
+	profileB := newBackendAgent(t, dir, nil)
+	defer closeTestCloser(t, profileB)
+
+	if profileA.Name() != profileB.Name() {
+		t.Fatalf("names differ: %q, %q", profileA.Name(), profileB.Name())
+	}
+	if profileA.ownerID() == profileB.ownerID() {
+		t.Fatalf("agents inheriting different CODEX_HOME values share owner %q", profileA.ownerID())
+	}
+	state := map[string]any{"session_id": "profile-a-session", "owner": profileA.ownerID()}
+	cfg, err := profileB.resolveSessionConfig(newStateContext(t, map[string]any{SessionStateKey: state, CWDStateKey: t.TempDir()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.sessionID != "" {
+		t.Fatalf("the profile inheriting another CODEX_HOME resumed the session %q", cfg.sessionID)
+	}
+}
+
+func TestLaunchSpecificVariablesDoNotChangeTheOwnerIdentity(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOSTNAME", "container-1")
+	t.Setenv("PWD", "/somewhere")
+	first := newBackendAgent(t, dir, nil)
+	defer closeTestCloser(t, first)
+	t.Setenv("HOSTNAME", "container-2")
+	t.Setenv("PWD", "/elsewhere")
+	second := newBackendAgent(t, dir, nil)
+	defer closeTestCloser(t, second)
+	if first.ownerID() != second.ownerID() {
+		t.Fatalf("a restart in another container changed the owner: %q vs %q", first.ownerID(), second.ownerID())
+	}
+}
+
+func TestOneEnvironmentSnapshotFeedsTheSubprocessAndTheIdentity(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", "/profiles/snapshot")
+	inherited := newBackendAgent(t, dir, nil)
+	defer closeTestCloser(t, inherited)
+	if inherited.clientConfig.Environment == nil {
+		t.Fatal("an agent without an explicit environment must hand its subprocess the snapshot")
+	}
+	if !slices.Contains(inherited.clientConfig.Environment, "CODEX_HOME=/profiles/snapshot") {
+		t.Fatal("the subprocess environment is not the snapshot the identity was computed from")
+	}
+	want := agentOwnerKey(inherited.Name(), inherited.clientConfig.Command, inherited.clientConfig.Environment, dir)
+	if inherited.ownerID() != want {
+		t.Fatalf("the identity %q was not computed from the subprocess environment (%q)", inherited.ownerID(), want)
+	}
+
+	explicit := []string{"ONLY=this"}
+	exact := newBackendAgent(t, dir, explicit)
+	defer closeTestCloser(t, exact)
+	if !slices.Equal(exact.clientConfig.Environment, explicit) {
+		t.Fatalf("an explicit environment must stay exact, got %v", exact.clientConfig.Environment)
 	}
 }

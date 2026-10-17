@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -31,20 +32,54 @@ const (
 // parkNow reports the current time; tests replace it.
 var parkNow = time.Now
 
+// effectiveEnvironment returns the environment the subprocess runs with: the
+// configured one, or a snapshot of the process environment when none is set.
+func effectiveEnvironment(configured []string) []string {
+	if configured != nil {
+		return configured
+	}
+	return os.Environ()
+}
+
+// volatileEnvironment lists variables that describe a process or a login
+// session rather than the backend profile, and change between launches (the
+// container id in HOSTNAME, the working directory, terminal and window-system
+// identifiers). They are left out of the owner identity, otherwise every
+// restart would look like another backend and forget its stored sessions.
+var volatileEnvironment = map[string]struct{}{
+	"_": {}, "PWD": {}, "OLDPWD": {}, "SHLVL": {}, "HOSTNAME": {}, "LINES": {}, "COLUMNS": {},
+	"TERM_SESSION_ID": {}, "SECURITYSESSIONID": {}, "SSH_AUTH_SOCK": {}, "SSH_CONNECTION": {},
+	"SSH_CLIENT": {}, "SSH_TTY": {}, "TMPDIR": {}, "WINDOWID": {}, "DISPLAY": {},
+	"DBUS_SESSION_BUS_ADDRESS": {}, "SESSION_MANAGER": {}, "XDG_SESSION_ID": {},
+	"__CF_USER_TEXT_ENCODING": {}, "LaunchInstanceID": {}, "ITERM_SESSION_ID": {},
+}
+
+func stableEnvironment(environment []string) []string {
+	stable := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, volatile := volatileEnvironment[name]; volatile || strings.HasPrefix(name, "XPC_") {
+			continue
+		}
+		stable = append(stable, entry)
+	}
+	sort.Strings(stable)
+	return stable
+}
+
 // agentOwnerKey identifies an agent in the shared ACP session state by its name
-// and by what starts its backend: the command, the environment and the working
-// directory of the subprocess. The name alone is not enough: agents that keep
-// the default name would all look like the same owner, and two agents with one
-// name and command but another environment (a different CODEX_HOME or provider
-// profile, another credential) or another working directory are different
-// backends whose sessions must not be resumed by each other. Only a truncated
-// hash is stored, never the command, the environment or the directory
-// themselves. A changed backend is a different owner, so its stored session is
-// not reused.
+// and by what starts its backend: the command, the effective environment and
+// the working directory of the subprocess. The name alone is not enough: agents
+// that keep the default name would all look like the same owner, and two agents
+// with one name and command but another environment (a different CODEX_HOME or
+// provider profile, another credential, whether set explicitly or inherited) or
+// another working directory are different backends whose sessions must not be
+// resumed by each other. Variables that only describe a launch are ignored, see
+// volatileEnvironment. Only a truncated hash is stored, never the command, the
+// environment or the directory themselves. A changed backend is a different
+// owner, so its stored session is not reused.
 func agentOwnerKey(name string, command, environment []string, workingDir string) string {
-	env := append([]string(nil), environment...)
-	sort.Strings(env)
-	input := strings.Join(command, "\x00") + "\x01" + strings.Join(env, "\x00") + "\x02" + workingDir
+	input := strings.Join(command, "\x00") + "\x01" + strings.Join(stableEnvironment(environment), "\x00") + "\x02" + workingDir
 	sum := sha256.Sum256([]byte(input))
 	return strings.TrimSpace(name) + ":" + hex.EncodeToString(sum[:4])
 }

@@ -223,9 +223,12 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("convert mcp servers: %w", err)
 	}
 	lifecycle, cancelLifecycle := context.WithCancel(ctx)
+	// One snapshot of the effective environment feeds both the subprocess and the
+	// owner identity, so they cannot disagree about which backend this is.
+	environment := effectiveEnvironment(cfg.Environment)
 	clientConfig := ClientConfig{
 		Command: append([]string(nil), cfg.Command...), WorkingDir: cfg.WorkingDir,
-		Environment: cloneEnvironment(cfg.Environment),
+		Environment: cloneEnvironment(environment),
 		ClientName:  cfg.ClientName, ClientVersion: cfg.ClientVersion, Stderr: cfg.Stderr,
 		PermissionHandler: protocolPermissionHandler(cfg.PermissionHandler), Logger: cfg.Logger,
 	}
@@ -234,7 +237,7 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 		lifecycle: lifecycle, processContext: ctx, protectAttachments: cfg.LazyInitialization || cfg.SetupTimeout > 0, cancelLifecycle: cancelLifecycle, clientConfig: clientConfig,
 		setupTimeout: cfg.SetupTimeout, initializeTimeout: cfg.InitializeTimeout, initializationGate: make(chan struct{}, 1),
 		workingDir:                cfg.WorkingDir,
-		ownerKey:                  agentOwnerKey(cfg.Name, cfg.Command, cfg.Environment, cfg.WorkingDir),
+		ownerKey:                  agentOwnerKey(cfg.Name, cfg.Command, environment, cfg.WorkingDir),
 		sessionConfig:             normalizeSessionConfigValues(cfg.SessionConfig),
 		reasoningEffort:           strings.TrimSpace(cfg.ReasoningEffort),
 		outputKey:                 strings.TrimSpace(cfg.OutputKey),
