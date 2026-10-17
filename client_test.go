@@ -1194,3 +1194,25 @@ func TestQueryClosedIsNotAStaleSessionOutsideResume(t *testing.T) {
 		t.Fatal("only ACP request errors qualify")
 	}
 }
+
+func TestOpenCodeSessionServiceFailureIsUnknownSessionOnlyForResume(t *testing.T) {
+	sessionService := &acp.RequestError{
+		Code:    -32603,
+		Message: "Internal error: OpenCode service failure",
+		Data:    map[string]any{"service": "session"},
+	}
+	if isACPSessionNotFoundError(sessionService) {
+		t.Fatal("a prompt-level service failure must not be classified as a stale session")
+	}
+	if !isACPResumeUnknownSessionError(sessionService) {
+		t.Fatal("a resume that fails in the session service must be treated as an unknown session")
+	}
+	otherService := &acp.RequestError{
+		Code:    -32603,
+		Message: "Internal error: OpenCode service failure",
+		Data:    map[string]any{"service": "provider"},
+	}
+	if isACPResumeUnknownSessionError(otherService) {
+		t.Fatal("failures of other OpenCode services are not a stale session")
+	}
+}

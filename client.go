@@ -710,8 +710,16 @@ func isACPResumeUnknownSessionError(err error) bool {
 	if !errors.As(err, &reqErr) {
 		return false
 	}
+	message := strings.ToLower(reqErr.Message)
 	data := strings.ToLower(acpRequestErrorDataString(reqErr.Data))
-	return strings.Contains(data, "query closed before response received")
+	if strings.Contains(data, "query closed before response received") {
+		return true
+	}
+	// OpenCode ACP reports a resume of a session id it does not know, for
+	// example one stored by another provider in a failover pool, as a failure
+	// of its session service.
+	return strings.Contains(message, "opencode service failure") &&
+		strings.Contains(data, `"service":"session"`)
 }
 
 func isACPSessionNotFoundError(err error) bool {
