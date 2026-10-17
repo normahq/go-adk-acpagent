@@ -696,6 +696,24 @@ func isACPMethodNotFoundError(err error) bool {
 	return errors.As(err, &reqErr) && reqErr.Code == -32601
 }
 
+// isACPResumeUnknownSessionError reports whether a session/resume failure
+// means the agent cannot restore the stored session id. Claude Code ACP closes
+// its query when asked to resume an id it never created, for example one stored
+// by another provider in a failover pool. The same message also covers query
+// worker crashes, so it is only meaningful for a resume that follows a prompt
+// that already reported the session as missing.
+func isACPResumeUnknownSessionError(err error) bool {
+	if isACPSessionNotFoundError(err) {
+		return true
+	}
+	var reqErr *acp.RequestError
+	if !errors.As(err, &reqErr) {
+		return false
+	}
+	data := strings.ToLower(acpRequestErrorDataString(reqErr.Data))
+	return strings.Contains(data, "query closed before response received")
+}
+
 func isACPSessionNotFoundError(err error) bool {
 	var reqErr *acp.RequestError
 	if !errors.As(err, &reqErr) {

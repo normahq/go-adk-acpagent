@@ -491,6 +491,16 @@ func TestAgentRecoversPromptFailureWithResumeOrNewSession(t *testing.T) {
 			wantID:    testSessionOneID,
 		},
 		{
+			name: "claude query closed on resume of a foreign session",
+			env: map[string]string{
+				"GO_SUPPORT_SESSION_RESUME":             "1",
+				"GO_FAIL_RESUME_QUERY_CLOSED":           "1",
+				"GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND": "1",
+			},
+			sessionID: "foreign-session",
+			wantID:    testSessionOneID,
+		},
+		{
 			name: "already active",
 			env: map[string]string{
 				"GO_SUPPORT_SESSION_RESUME":             "1",
@@ -1895,4 +1905,50 @@ func helperCommandWithEnv(t *testing.T, env map[string]string) []string {
 	}
 	cmd = append(cmd, os.Args[0], "-test.run=TestACPHelperProcess", "--")
 	return cmd
+}
+
+func TestAgentDoesNotRetryPromptOnQueryClosed(t *testing.T) {
+	methodLog := t.TempDir() + "/methods"
+	a, err := NewWithContext(t.Context(), Config{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_SUPPORT_SESSION_RESUME":         "1",
+			"GO_FAIL_FIRST_PROMPT_QUERY_CLOSED": "1",
+			"GO_METHOD_LOG":                     methodLog,
+		}),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+
+	sessionService := session.InMemoryService()
+	r, err := runnerpkg.New(runnerpkg.Config{AppName: "test-app", Agent: a, SessionService: sessionService})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+	sess, err := sessionService.Create(t.Context(), &session.CreateRequest{AppName: "test-app", UserID: "test-user"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var runErr error
+	for _, err := range r.Run(t.Context(), "test-user", sess.Session.ID(), genai.NewContentFromText("hello", genai.RoleUser), agent.RunConfig{}) {
+		if err != nil {
+			runErr = err
+		}
+	}
+	if runErr == nil || !strings.Contains(runErr.Error(), "Query closed before response received") {
+		t.Fatalf("prompt-level query failure must reach the caller, got %v", runErr)
+	}
+	data, err := os.ReadFile(methodLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), "session/prompt\n"); got != 1 {
+		t.Fatalf("prompt was retried after a query failure: %d prompts\n%s", got, data)
+	}
+	if strings.Contains(string(data), "session/resume") {
+		t.Fatalf("recovery must not start for a prompt-level query failure:\n%s", data)
+	}
 }
