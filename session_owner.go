@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -33,34 +34,66 @@ const (
 var parkNow = time.Now
 
 // effectiveEnvironment returns the environment the subprocess runs with: the
-// configured one, or a snapshot of the process environment when none is set.
-func effectiveEnvironment(configured []string) []string {
+// configured one as is, or, when none is set, a snapshot of the process
+// environment taken now. Like os/exec does for an inherited environment, the
+// snapshot gets PWD set to the directory the subprocess starts in, otherwise it
+// would keep the PWD of this process.
+func effectiveEnvironment(configured []string, workingDir string) []string {
 	if configured != nil {
 		return configured
 	}
-	return os.Environ()
+	snapshot := os.Environ()
+	if workingDir == "" {
+		return snapshot
+	}
+	dir, err := filepath.Abs(workingDir)
+	if err != nil {
+		dir = workingDir
+	}
+	environment := make([]string, 0, len(snapshot)+1)
+	for _, entry := range snapshot {
+		if name, _, _ := strings.Cut(entry, "="); name != "PWD" {
+			environment = append(environment, entry)
+		}
+	}
+	return append(environment, "PWD="+dir)
 }
 
-// volatileEnvironment lists variables that describe a process or a login
-// session rather than the backend profile, and change between launches (the
-// container id in HOSTNAME, the working directory, terminal and window-system
-// identifiers). They are left out of the owner identity, otherwise every
-// restart would look like another backend and forget its stored sessions.
+// volatileEnvironment lists variables that describe a process, a login session
+// or a service manager rather than the backend profile, and change between
+// launches (the container id in HOSTNAME, the working directory, terminal and
+// multiplexer ids, systemd invocation ids, window-system ids). They are left
+// out of the owner identity, otherwise every restart would look like another
+// backend and forget its stored sessions. The list cannot be complete: a
+// deployment with launch-specific variables of its own pins the identity with
+// Config.SessionOwner.
 var volatileEnvironment = map[string]struct{}{
 	"_": {}, "PWD": {}, "OLDPWD": {}, "SHLVL": {}, "HOSTNAME": {}, "LINES": {}, "COLUMNS": {},
-	"TERM_SESSION_ID": {}, "SECURITYSESSIONID": {}, "SSH_AUTH_SOCK": {}, "SSH_CONNECTION": {},
-	"SSH_CLIENT": {}, "SSH_TTY": {}, "TMPDIR": {}, "WINDOWID": {}, "DISPLAY": {},
-	"DBUS_SESSION_BUS_ADDRESS": {}, "SESSION_MANAGER": {}, "XDG_SESSION_ID": {},
-	"__CF_USER_TEXT_ENCODING": {}, "LaunchInstanceID": {}, "ITERM_SESSION_ID": {},
+	"TERM": {}, "COLORTERM": {}, "TERM_PROGRAM_VERSION": {}, "TERM_SESSION_ID": {}, "ITERM_SESSION_ID": {},
+	"ITERM_PROFILE": {}, "TMUX": {}, "TMUX_PANE": {}, "STY": {}, "GPG_TTY": {}, "WT_SESSION": {},
+	"SECURITYSESSIONID": {}, "COMMAND_MODE": {}, "__CF_USER_TEXT_ENCODING": {}, "LaunchInstanceID": {},
+	"SSH_AUTH_SOCK": {}, "SSH_AGENT_PID": {}, "SSH_CONNECTION": {}, "SSH_CLIENT": {}, "SSH_TTY": {},
+	"TMPDIR": {}, "WINDOWID": {}, "DISPLAY": {}, "VSCODE_IPC_HOOK_CLI": {},
+	"DBUS_SESSION_BUS_ADDRESS": {}, "SESSION_MANAGER": {}, "XDG_SESSION_ID": {}, "XDG_RUNTIME_DIR": {},
+	"INVOCATION_ID": {}, "JOURNAL_STREAM": {}, "SYSTEMD_EXEC_PID": {}, "NOTIFY_SOCKET": {},
+	"MAINPID": {}, "LISTEN_PID": {}, "LISTEN_FDS": {}, "LISTEN_FDNAMES": {},
 }
 
+// stableEnvironment returns the entries of the effective environment that
+// identify a backend: launch-specific variables are dropped and, for a name
+// that appears several times, only the last value counts, as it does when the
+// environment is applied. The result is sorted.
 func stableEnvironment(environment []string) []string {
-	stable := make([]string, 0, len(environment))
+	last := make(map[string]string, len(environment))
 	for _, entry := range environment {
 		name, _, _ := strings.Cut(entry, "=")
 		if _, volatile := volatileEnvironment[name]; volatile || strings.HasPrefix(name, "XPC_") {
 			continue
 		}
+		last[name] = entry
+	}
+	stable := make([]string, 0, len(last))
+	for _, entry := range last {
 		stable = append(stable, entry)
 	}
 	sort.Strings(stable)
@@ -79,9 +112,20 @@ func stableEnvironment(environment []string) []string {
 // environment or the directory themselves. A changed backend is a different
 // owner, so its stored session is not reused.
 func agentOwnerKey(name string, command, environment []string, workingDir string) string {
-	input := strings.Join(command, "\x00") + "\x01" + strings.Join(stableEnvironment(environment), "\x00") + "\x02" + workingDir
-	sum := sha256.Sum256([]byte(input))
+	commandPart := strings.Join(command, "\x00")
+	environmentPart := strings.Join(stableEnvironment(environment), "\x00")
+	sum := sha256.Sum256([]byte(commandPart + "\x01" + environmentPart + "\x02" + workingDir))
 	return strings.TrimSpace(name) + ":" + hex.EncodeToString(sum[:4])
+}
+
+// resolveOwnerKey returns the identity configured by the caller, or derives it
+// from the backend. A configured identity must be stable across launches and
+// must not contain secrets: it is stored in the session state as given.
+func resolveOwnerKey(configured, name string, command, environment []string, workingDir string) string {
+	if owner := strings.TrimSpace(configured); owner != "" {
+		return owner
+	}
+	return agentOwnerKey(name, command, environment, workingDir)
 }
 
 // ownerID identifies this agent in the shared ACP session state.

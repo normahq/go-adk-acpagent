@@ -424,9 +424,9 @@ func newBackendAgent(t *testing.T, workingDir string, environment []string) *Age
 
 func TestSameNameAndCommandWithAnotherProfileIsADifferentOwner(t *testing.T) {
 	dir := t.TempDir()
-	profileA := newBackendAgent(t, dir, append(os.Environ(), "CODEX_HOME=/profiles/a"))
+	profileA := newBackendAgent(t, dir, []string{"PATH=" + os.Getenv("PATH"), "CODEX_HOME=/profiles/a"})
 	defer closeTestCloser(t, profileA)
-	profileB := newBackendAgent(t, dir, append(os.Environ(), "CODEX_HOME=/profiles/b"))
+	profileB := newBackendAgent(t, dir, []string{"PATH=" + os.Getenv("PATH"), "CODEX_HOME=/profiles/b"})
 	defer closeTestCloser(t, profileB)
 	if profileA.Name() != profileB.Name() {
 		t.Fatalf("names differ: %q, %q", profileA.Name(), profileB.Name())
@@ -516,5 +516,95 @@ func TestOneEnvironmentSnapshotFeedsTheSubprocessAndTheIdentity(t *testing.T) {
 	defer closeTestCloser(t, exact)
 	if !slices.Equal(exact.clientConfig.Environment, explicit) {
 		t.Fatalf("an explicit environment must stay exact, got %v", exact.clientConfig.Environment)
+	}
+}
+
+func TestInheritedEnvironmentSnapshotCarriesThePWDOfTheWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PWD", "/the/parent/directory")
+	inherited := newBackendAgent(t, dir, nil)
+	defer closeTestCloser(t, inherited)
+
+	var pwd []string
+	for _, entry := range inherited.clientConfig.Environment {
+		if strings.HasPrefix(entry, "PWD=") {
+			pwd = append(pwd, entry)
+		}
+	}
+	if !slices.Equal(pwd, []string{"PWD=" + dir}) {
+		t.Fatalf("the subprocess must get PWD of its working directory, got %v", pwd)
+	}
+
+	explicit := newBackendAgent(t, dir, []string{"ONLY=this"})
+	defer closeTestCloser(t, explicit)
+	if !slices.Equal(explicit.clientConfig.Environment, []string{"ONLY=this"}) {
+		t.Fatalf("an explicit environment must not get a PWD, got %v", explicit.clientConfig.Environment)
+	}
+}
+
+func TestOwnerIdentityIgnoresOnlyLaunchSpecificVariables(t *testing.T) {
+	command := []string{"agent", "acp"}
+	base := []string{"CODEX_HOME=/a", "HOME=/home/me"}
+	want := agentOwnerKey("n", command, base, "/w")
+	for _, volatile := range []string{
+		"HOSTNAME=x", "PWD=/y", "SHLVL=3", "TERM=xterm", "TMUX=/tmp/tmux-1/default,1,0", "INVOCATION_ID=abc",
+		"JOURNAL_STREAM=8:1", "XPC_SERVICE_NAME=foo", "XPC_FLAGS=0x0", "SSH_AUTH_SOCK=/tmp/agent", "TERM_SESSION_ID=w0",
+	} {
+		if got := agentOwnerKey("n", command, append(slices.Clone(base), volatile), "/w"); got != want {
+			t.Errorf("%s changed the identity", volatile)
+		}
+	}
+	// Names are case sensitive, so these are other variables and count.
+	if agentOwnerKey("n", command, append(slices.Clone(base), "hostname=x"), "/w") == want {
+		t.Error("a variable that only looks like a launch-specific one was ignored")
+	}
+	if agentOwnerKey("n", command, append(slices.Clone(base), "CODEX_PROFILE=work"), "/w") == want {
+		t.Error("an ordinary variable was ignored")
+	}
+}
+
+func TestOwnerIdentityUsesTheLastValueOfARepeatedVariable(t *testing.T) {
+	command := []string{"agent", "acp"}
+	first := agentOwnerKey("n", command, []string{"A=1", "A=2"}, "/w")
+	second := agentOwnerKey("n", command, []string{"A=2", "A=1"}, "/w")
+	if first == second {
+		t.Fatal("environments that end up with a different value for A must be different owners")
+	}
+	if agentOwnerKey("n", command, []string{"A=0", "A=2"}, "/w") != first {
+		t.Fatal("only the last value of a repeated variable counts")
+	}
+}
+
+func TestSessionOwnerPinsTheIdentity(t *testing.T) {
+	dir := t.TempDir()
+	build := func(environment []string, owner string) *Agent {
+		a, err := NewWithContext(t.Context(), Config{
+			Name:         "provider",
+			Command:      helperCommandWithEnv(t, nil),
+			Environment:  environment,
+			WorkingDir:   dir,
+			SessionOwner: owner,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	first := build([]string{"BUILD_ID=1"}, "  codex-work  ")
+	defer closeTestCloser(t, first)
+	second := build([]string{"BUILD_ID=2"}, "codex-work")
+	defer closeTestCloser(t, second)
+	if first.ownerID() != "codex-work" || second.ownerID() != "codex-work" {
+		t.Fatalf("a configured identity must be used as given (trimmed): %q, %q", first.ownerID(), second.ownerID())
+	}
+	other := build([]string{"BUILD_ID=2"}, "codex-personal")
+	defer closeTestCloser(t, other)
+	if other.ownerID() == first.ownerID() {
+		t.Fatal("different configured identities must stay different owners")
+	}
+	derived := build([]string{"BUILD_ID=2"}, "")
+	defer closeTestCloser(t, derived)
+	if derived.ownerID() == "" || derived.ownerID() == "codex-work" {
+		t.Fatalf("without SessionOwner the identity is derived, got %q", derived.ownerID())
 	}
 }

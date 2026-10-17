@@ -71,10 +71,20 @@ type Config struct {
 	ClientVersion string
 	// Command is the argv array used to start the ACP subprocess.
 	Command []string
-	// Environment is the exact environment supplied to the ACP subprocess.
-	// A nil slice inherits the current process environment. A non-nil empty
-	// slice starts the subprocess with an empty environment.
+	// Environment is the exact environment supplied to the ACP subprocess. A nil
+	// slice gives the subprocess a snapshot of the current process environment
+	// taken when the agent is created, with PWD set to WorkingDir; with lazy
+	// initialization the subprocess starts later with that snapshot, so changes to
+	// the process environment after New are not seen. A non-nil empty slice
+	// starts the subprocess with an empty environment.
 	Environment []string
+	// SessionOwner is an optional stable identity of this backend profile. By
+	// default the identity is derived from Name, Command, the effective
+	// environment and WorkingDir, and an agent only resumes ACP sessions it
+	// created itself. Set it when the environment holds variables that change
+	// between launches. It is stored in the session state as given, so it must
+	// not contain secrets.
+	SessionOwner string
 	// WorkingDir is the default directory for ACP execution:
 	//   - the ACP subprocess is started with this directory as cmd.Dir.
 	//   - ACP session/new uses this as cwd unless overridden per ADK session
@@ -225,7 +235,7 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 	lifecycle, cancelLifecycle := context.WithCancel(ctx)
 	// One snapshot of the effective environment feeds both the subprocess and the
 	// owner identity, so they cannot disagree about which backend this is.
-	environment := effectiveEnvironment(cfg.Environment)
+	environment := effectiveEnvironment(cfg.Environment, cfg.WorkingDir)
 	clientConfig := ClientConfig{
 		Command: append([]string(nil), cfg.Command...), WorkingDir: cfg.WorkingDir,
 		Environment: cloneEnvironment(environment),
@@ -237,7 +247,7 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 		lifecycle: lifecycle, processContext: ctx, protectAttachments: cfg.LazyInitialization || cfg.SetupTimeout > 0, cancelLifecycle: cancelLifecycle, clientConfig: clientConfig,
 		setupTimeout: cfg.SetupTimeout, initializeTimeout: cfg.InitializeTimeout, initializationGate: make(chan struct{}, 1),
 		workingDir:                cfg.WorkingDir,
-		ownerKey:                  agentOwnerKey(cfg.Name, cfg.Command, environment, cfg.WorkingDir),
+		ownerKey:                  resolveOwnerKey(cfg.SessionOwner, cfg.Name, cfg.Command, environment, cfg.WorkingDir),
 		sessionConfig:             normalizeSessionConfigValues(cfg.SessionConfig),
 		reasoningEffort:           strings.TrimSpace(cfg.ReasoningEffort),
 		outputKey:                 strings.TrimSpace(cfg.OutputKey),
