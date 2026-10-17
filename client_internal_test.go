@@ -83,7 +83,7 @@ func TestNewClientDoesNotLogEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	defer closeTestCloser(t, client)
+	closeTestCloser(t, client)
 	if strings.Contains(logs.String(), secretValue) {
 		t.Fatalf("logs contain environment value: %s", logs.String())
 	}
