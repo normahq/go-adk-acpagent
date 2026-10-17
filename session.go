@@ -179,7 +179,7 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 			}
 			return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}, nil
 		}
-		if !isACPResumeUnknownSessionError(err) {
+		if !isACPResumeRejectedError(err) {
 			return remoteSession{}, fmt.Errorf("resume acp session %q after prompt failure: %w", cfg.sessionID, err)
 		}
 		logger.Warn().

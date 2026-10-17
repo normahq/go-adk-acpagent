@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -1178,41 +1179,47 @@ func TestRequestPermissionUsesActivePromptContext(t *testing.T) {
 	}
 }
 
-func TestQueryClosedIsNotAStaleSessionOutsideResume(t *testing.T) {
-	err := &acp.RequestError{
-		Code:    -32603,
-		Message: "Internal error",
-		Data:    map[string]any{"details": "Query closed before response received"},
+func TestResumeRejectionClassification(t *testing.T) {
+	testCases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "claude closes its query",
+			err:  &acp.RequestError{Code: -32603, Message: "Internal error", Data: map[string]any{"details": "Query closed before response received"}},
+			want: true,
+		},
+		{
+			name: "opencode fails its session service",
+			err:  &acp.RequestError{Code: -32603, Message: "Internal error: OpenCode service failure", Data: map[string]any{"service": "session"}},
+			want: true,
+		},
+		{
+			name: "any other agent error",
+			err:  &acp.RequestError{Code: -32000, Message: "something agent specific"},
+			want: true,
+		},
+		{
+			name: "wrapped request error",
+			err:  fmt.Errorf("resume: %w", &acp.RequestError{Code: -32603, Message: "Internal error"}),
+			want: true,
+		},
+		{name: "deadline", err: context.DeadlineExceeded, want: false},
+		{name: "canceled", err: context.Canceled, want: false},
+		{name: "transport failure", err: errors.New("write |1: file already closed"), want: false},
 	}
-	if isACPSessionNotFoundError(err) {
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isACPResumeRejectedError(tc.err); got != tc.want {
+				t.Fatalf("isACPResumeRejectedError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+	// Prompt-level errors keep their own classifier: a query failure must not
+	// look like a missing session, or the prompt would be replayed.
+	queryClosed := &acp.RequestError{Code: -32603, Message: "Internal error", Data: map[string]any{"details": "Query closed before response received"}}
+	if isACPSessionNotFoundError(queryClosed) {
 		t.Fatal("a prompt-level query failure must not be classified as a stale session")
-	}
-	if !isACPResumeUnknownSessionError(err) {
-		t.Fatal("a resume that closes its query must be treated as an unknown session")
-	}
-	if isACPResumeUnknownSessionError(errors.New("query closed before response received")) {
-		t.Fatal("only ACP request errors qualify")
-	}
-}
-
-func TestOpenCodeSessionServiceFailureIsUnknownSessionOnlyForResume(t *testing.T) {
-	sessionService := &acp.RequestError{
-		Code:    -32603,
-		Message: "Internal error: OpenCode service failure",
-		Data:    map[string]any{"service": "session"},
-	}
-	if isACPSessionNotFoundError(sessionService) {
-		t.Fatal("a prompt-level service failure must not be classified as a stale session")
-	}
-	if !isACPResumeUnknownSessionError(sessionService) {
-		t.Fatal("a resume that fails in the session service must be treated as an unknown session")
-	}
-	otherService := &acp.RequestError{
-		Code:    -32603,
-		Message: "Internal error: OpenCode service failure",
-		Data:    map[string]any{"service": "provider"},
-	}
-	if isACPResumeUnknownSessionError(otherService) {
-		t.Fatal("failures of other OpenCode services are not a stale session")
 	}
 }

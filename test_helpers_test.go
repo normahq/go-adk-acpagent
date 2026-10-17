@@ -92,6 +92,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	failResumeInvalidSessionID := os.Getenv("GO_FAIL_RESUME_INVALID_SESSION_ID") == "1"
 	failResumeMissingRollout := os.Getenv("GO_FAIL_RESUME_MISSING_ROLLOUT") == "1"
 	failResumeQueryClosed := os.Getenv("GO_FAIL_RESUME_QUERY_CLOSED") == "1"
+	failResumeGenericAgentError := os.Getenv("GO_FAIL_RESUME_GENERIC_AGENT_ERROR") == "1"
 	failResumeOpenCodeSessionService := os.Getenv("GO_FAIL_RESUME_OPENCODE_SESSION_SERVICE") == "1"
 	failFirstPromptQueryClosed := os.Getenv("GO_FAIL_FIRST_PROMPT_QUERY_CLOSED") == "1"
 	failResumeAlreadyExists := os.Getenv("GO_FAIL_RESUME_ALREADY_EXISTS") == "1"
@@ -241,6 +242,14 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 					Message: "Internal error: OpenCode service failure",
 					Data:    map[string]any{"service": "session"},
 				},
+			})
+			return
+		}
+		if method == acp.AgentMethodSessionResume && failResumeGenericAgentError {
+			writeEnvelope(stdout, helperEnvelope{
+				JSONRPC: "2.0",
+				ID:      msg.ID,
+				Error:   &helperError{Code: -32000, Message: "agent specific resume failure"},
 			})
 			return
 		}

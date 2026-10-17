@@ -696,30 +696,17 @@ func isACPMethodNotFoundError(err error) bool {
 	return errors.As(err, &reqErr) && reqErr.Code == -32601
 }
 
-// isACPResumeUnknownSessionError reports whether a session/resume failure
-// means the agent cannot restore the stored session id. Claude Code ACP closes
-// its query when asked to resume an id it never created, for example one stored
-// by another provider in a failover pool. The same message also covers query
-// worker crashes, so it is only meaningful for a resume that follows a prompt
-// that already reported the session as missing.
-func isACPResumeUnknownSessionError(err error) bool {
-	if isACPSessionNotFoundError(err) {
-		return true
-	}
+// isACPResumeRejectedError reports whether the agent answered session/resume
+// with a JSON-RPC error. It is only used in recovery, after the prompt already
+// reported the session as missing, so a rejected resume means the stored id is
+// stale, for example one written by another provider in a failover pool. Agents
+// word that rejection differently (Claude Code ACP closes its query, OpenCode
+// ACP fails its session service), so the text is deliberately not inspected.
+// Timeouts, cancellation and transport failures are not request errors and
+// stay errors.
+func isACPResumeRejectedError(err error) bool {
 	var reqErr *acp.RequestError
-	if !errors.As(err, &reqErr) {
-		return false
-	}
-	message := strings.ToLower(reqErr.Message)
-	data := strings.ToLower(acpRequestErrorDataString(reqErr.Data))
-	if strings.Contains(data, "query closed before response received") {
-		return true
-	}
-	// OpenCode ACP reports a resume of a session id it does not know, for
-	// example one stored by another provider in a failover pool, as a failure
-	// of its session service.
-	return strings.Contains(message, "opencode service failure") &&
-		strings.Contains(data, `"service":"session"`)
+	return errors.As(err, &reqErr)
 }
 
 func isACPSessionNotFoundError(err error) bool {

@@ -512,6 +512,16 @@ func TestAgentRecoversPromptFailureWithResumeOrNewSession(t *testing.T) {
 			wantID:    testSessionOneID,
 		},
 		{
+			name: "generic agent error on resume of a foreign session",
+			env: map[string]string{
+				"GO_SUPPORT_SESSION_RESUME":             "1",
+				"GO_FAIL_RESUME_GENERIC_AGENT_ERROR":    "1",
+				"GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND": "1",
+			},
+			sessionID: "foreign-session",
+			wantID:    testSessionOneID,
+		},
+		{
 			name: "already active",
 			env: map[string]string{
 				"GO_SUPPORT_SESSION_RESUME":             "1",
