@@ -51,6 +51,10 @@ type ProtocolPermissionHandler func(context.Context, acp.RequestPermissionReques
 type ClientConfig struct {
 	// Command is the argv array used to start the ACP subprocess.
 	Command []string
+	// Environment is the exact environment supplied to the ACP subprocess.
+	// A nil slice inherits the current process environment. A non-nil empty
+	// slice starts the subprocess with an empty environment.
+	Environment []string
 	// WorkingDir is the directory where the ACP subprocess is executed
 	// (cmd.Dir). It is independent from ACP session/new.cwd, which is provided
 	// per session creation call.
@@ -174,6 +178,7 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	}()
 	cmd := exec.CommandContext(ctx, cfg.Command[0], cfg.Command[1:]...)
 	cmd.Dir = cfg.WorkingDir
+	cmd.Env = cloneEnvironment(cfg.Environment)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("acp stdin pipe: %w", err)
@@ -225,6 +230,13 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	go c.waitLoop()
 	keepProcess = true
 	return c, nil
+}
+
+func cloneEnvironment(environment []string) []string {
+	if environment == nil {
+		return nil
+	}
+	return append(make([]string, 0, len(environment)), environment...)
 }
 
 func (c *Client) loggerForContext(ctx context.Context) logger {

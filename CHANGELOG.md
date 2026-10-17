@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow callers to supply an exact ACP subprocess environment while preserving
+  inherited environment behavior when the option is omitted.
 - Let explicit session config replace conflicting persisted values on resume.
 - Preserve ordered ADK text, inline media, and file data in ACP prompts.
 - Keep first-turn instructions separate from structured user content.

@@ -13,6 +13,36 @@ import (
 	"time"
 )
 
+func TestLazyAgentPreservesConfiguredEnvironment(t *testing.T) {
+	environment := []string{"ACPAGENT_EXACT=value"}
+	a, err := NewWithContext(t.Context(), Config{
+		Command:            []string{"/does/not/exist"},
+		Environment:        environment,
+		LazyInitialization: true,
+	})
+	if err != nil {
+		t.Fatalf("NewWithContext() error = %v", err)
+	}
+	defer closeTestCloser(t, a)
+	environment[0] = "ACPAGENT_EXACT=mutated"
+	if got := a.clientConfig.Environment; len(got) != 1 || got[0] != "ACPAGENT_EXACT=value" {
+		t.Fatalf("client environment = %q, want copied original", got)
+	}
+
+	emptyAgent, err := NewWithContext(t.Context(), Config{
+		Command:            []string{"/does/not/exist"},
+		Environment:        []string{},
+		LazyInitialization: true,
+	})
+	if err != nil {
+		t.Fatalf("NewWithContext(empty environment) error = %v", err)
+	}
+	defer closeTestCloser(t, emptyAgent)
+	if emptyAgent.clientConfig.Environment == nil {
+		t.Fatal("client environment = nil, want explicit empty slice")
+	}
+}
+
 func TestLazyConstructorDefersProcessLaunch(t *testing.T) {
 	a, err := NewWithContext(t.Context(), Config{Command: []string{"/does/not/exist"}, LazyInitialization: true, SetupTimeout: time.Second})
 	if err != nil {
