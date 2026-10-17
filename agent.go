@@ -71,6 +71,10 @@ type Config struct {
 	ClientVersion string
 	// Command is the argv array used to start the ACP subprocess.
 	Command []string
+	// Environment is the exact environment supplied to the ACP subprocess.
+	// A nil slice inherits the current process environment. A non-nil empty
+	// slice starts the subprocess with an empty environment.
+	Environment []string
 	// WorkingDir is the default directory for ACP execution:
 	//   - the ACP subprocess is started with this directory as cmd.Dir.
 	//   - ACP session/new uses this as cwd unless overridden per ADK session
@@ -220,7 +224,8 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 	lifecycle, cancelLifecycle := context.WithCancel(ctx)
 	clientConfig := ClientConfig{
 		Command: append([]string(nil), cfg.Command...), WorkingDir: cfg.WorkingDir,
-		ClientName: cfg.ClientName, ClientVersion: cfg.ClientVersion, Stderr: cfg.Stderr,
+		Environment: cloneEnvironment(cfg.Environment),
+		ClientName:  cfg.ClientName, ClientVersion: cfg.ClientVersion, Stderr: cfg.Stderr,
 		PermissionHandler: protocolPermissionHandler(cfg.PermissionHandler), Logger: cfg.Logger,
 	}
 

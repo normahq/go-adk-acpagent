@@ -1,11 +1,14 @@
 package acpagent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +17,98 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"google.golang.org/adk/v2/session"
 )
+
+func TestNewClientProcessEnvironment(t *testing.T) {
+	t.Setenv("ACPAGENT_INHERITED", "from-parent")
+
+	tests := []struct {
+		name        string
+		environment []string
+		want        []string
+		wantAbsent  string
+	}{
+		{
+			name: "nil inherits parent",
+			want: []string{"ACPAGENT_INHERITED=from-parent"},
+		},
+		{
+			name:        "exact environment",
+			environment: []string{"ACPAGENT_EXACT=value", "ACPAGENT_EMPTY="},
+			want:        []string{"ACPAGENT_EXACT=value", "ACPAGENT_EMPTY="},
+			wantAbsent:  "ACPAGENT_INHERITED=from-parent",
+		},
+		{
+			name:        "explicit empty",
+			environment: []string{},
+			wantAbsent:  "ACPAGENT_INHERITED=from-parent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dumpPath := t.TempDir() + "/environment"
+			client, err := NewClient(t.Context(), ClientConfig{
+				Command:     []string{os.Args[0], "-test.run=^TestACPHelperProcess$", "--", "--acp-helper", "--env-dump=" + dumpPath},
+				Environment: tt.environment,
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+			defer closeTestCloser(t, client)
+
+			got := waitForEnvironmentDump(t, dumpPath)
+			for _, want := range tt.want {
+				if !slices.Contains(got, want) {
+					t.Errorf("child environment missing %q: %q", want, got)
+				}
+			}
+			if tt.wantAbsent != "" && slices.Contains(got, tt.wantAbsent) {
+				t.Errorf("child environment unexpectedly contains %q: %q", tt.wantAbsent, got)
+			}
+			if tt.environment != nil && len(got) != len(tt.environment) {
+				t.Errorf("child environment = %q, want exact %q", got, tt.environment)
+			}
+		})
+	}
+}
+
+func TestNewClientDoesNotLogEnvironment(t *testing.T) {
+	const secretValue = "do-not-log-environment-value"
+	var logs bytes.Buffer
+	client, err := NewClient(t.Context(), ClientConfig{
+		Command:     []string{os.Args[0], "-test.run=^TestACPHelperProcess$", "--", "--acp-helper"},
+		Environment: []string{"ACPAGENT_SECRET=" + secretValue},
+		Logger:      slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer closeTestCloser(t, client)
+	if strings.Contains(logs.String(), secretValue) {
+		t.Fatalf("logs contain environment value: %s", logs.String())
+	}
+}
+
+func waitForEnvironmentDump(t *testing.T, path string) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			if len(data) == 0 {
+				return []string{}
+			}
+			return strings.Split(string(data), "\n")
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read child environment: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for child environment: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func TestReadonlyInvocationContextNil(t *testing.T) {
 	t.Parallel()
