@@ -1,9 +1,11 @@
 package acpagent
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"google.golang.org/adk/v2/agent"
@@ -11,6 +13,16 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
+
+// fixedParkTime makes the parked_at stamp predictable for the test.
+func fixedParkTime(t *testing.T) string {
+	t.Helper()
+	at := time.Date(2026, time.October, 17, 12, 0, 0, 0, time.UTC)
+	previous := parkNow
+	parkNow = func() time.Time { return at }
+	t.Cleanup(func() { parkNow = previous })
+	return at.Format(time.RFC3339Nano)
+}
 
 func newOwnedTestAgent(t *testing.T, name string, env map[string]string) *Agent {
 	t.Helper()
@@ -109,12 +121,13 @@ func TestOwnedStateParksForeignSessionAndRestoresOwn(t *testing.T) {
 	defer closeTestCloser(t, codex)
 	ctx := newStateContext(t, map[string]any{SessionStateKey: map[string]any{"session_id": "codex-1", "owner": codex.ownerID()}})
 
+	at := fixedParkTime(t)
 	input := map[string]any{"session_id": "claude-1"}
 	got := claude.ownedState(ctx.session, input)
 	want := map[string]any{
 		"session_id": "claude-1",
 		"owner":      claude.ownerID(),
-		"parked":     map[string]any{codex.ownerID(): map[string]any{"session_id": "codex-1"}},
+		"parked":     map[string]any{codex.ownerID(): map[string]any{"session_id": "codex-1", "parked_at": at}},
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("claude takes over (-want +got):\n%s", diff)
@@ -130,7 +143,7 @@ func TestOwnedStateParksForeignSessionAndRestoresOwn(t *testing.T) {
 	wantBack := map[string]any{
 		"session_id": "codex-1",
 		"owner":      codex.ownerID(),
-		"parked":     map[string]any{claude.ownerID(): map[string]any{"session_id": "claude-1"}},
+		"parked":     map[string]any{claude.ownerID(): map[string]any{"session_id": "claude-1", "parked_at": at}},
 	}
 	if diff := cmp.Diff(wantBack, back); diff != "" {
 		t.Fatalf("codex takes back its session (-want +got):\n%s", diff)
@@ -295,4 +308,98 @@ func mustRead(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestOwnedStateLeavesAnEmptyStateAlone(t *testing.T) {
+	a := newOwnedTestAgent(t, "me", nil)
+	defer closeTestCloser(t, a)
+	ctx := newStateContext(t, map[string]any{})
+	got := a.ownedState(ctx.session, map[string]any{})
+	if len(got) != 0 {
+		t.Fatalf("an empty state must stay empty, got %v", got)
+	}
+}
+
+func TestResetDoesNotBringBackAParkedSession(t *testing.T) {
+	first := newOwnedTestAgent(t, "first", nil)
+	defer closeTestCloser(t, first)
+	second := newOwnedTestAgent(t, "second", nil)
+	defer closeTestCloser(t, second)
+	// The second agent took over and the session id was then cleared by a reset.
+	state := map[string]any{
+		"session_id": "",
+		"owner":      second.ownerID(),
+		"parked":     map[string]any{first.ownerID(): map[string]any{"session_id": "first-old"}},
+	}
+	cfg, err := first.resolveSessionConfig(newStateContext(t, map[string]any{SessionStateKey: state, CWDStateKey: t.TempDir()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.sessionID != "" {
+		t.Fatalf("a reset resumed the old session %q", cfg.sessionID)
+	}
+}
+
+func TestParkedSessionsAreBounded(t *testing.T) {
+	var tick time.Time = time.Date(2026, time.October, 17, 0, 0, 0, 0, time.UTC)
+	previous := parkNow
+	parkNow = func() time.Time { tick = tick.Add(time.Minute); return tick }
+	t.Cleanup(func() { parkNow = previous })
+
+	ctx := newStateContext(t, map[string]any{})
+	var firstOwner string
+	for i := 0; i < maxParkedSessions+5; i++ {
+		a := newOwnedTestAgent(t, fmt.Sprintf("agent-%02d", i), nil)
+		defer closeTestCloser(t, a)
+		if i == 0 {
+			firstOwner = a.ownerID()
+		}
+		state := a.ownedState(ctx.session, map[string]any{"session_id": fmt.Sprintf("s-%02d", i)})
+		if err := ctx.session.State().Set(SessionStateKey, state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := liveACPState(ctx.session)
+	parked, _ := live["parked"].(map[string]any)
+	if len(parked) != maxParkedSessions {
+		t.Fatalf("parked sessions = %d, want at most %d", len(parked), maxParkedSessions)
+	}
+	if _, kept := parked[firstOwner]; kept {
+		t.Fatal("the oldest parked session must be dropped first")
+	}
+}
+
+func TestOwnerIdentityCoversNameCommandAndEnvironment(t *testing.T) {
+	command := []string{"agent", "acp"}
+	base := agentOwnerKey("same", command, []string{"HOME=/a"})
+	if base != agentOwnerKey("same", command, []string{"HOME=/a"}) {
+		t.Fatal("the identity must be stable")
+	}
+	if base == agentOwnerKey("same", command, []string{"HOME=/b"}) {
+		t.Fatal("agents with another environment must be distinct owners")
+	}
+	if base == agentOwnerKey("same", []string{"agent", "acp", "--x"}, []string{"HOME=/a"}) {
+		t.Fatal("agents with another command must be distinct owners")
+	}
+	if base == agentOwnerKey("other", command, []string{"HOME=/a"}) {
+		t.Fatal("agents with another name must be distinct owners")
+	}
+	if agentOwnerKey("same", command, []string{"B=2", "A=1"}) != agentOwnerKey("same", command, []string{"A=1", "B=2"}) {
+		t.Fatal("the order of environment entries must not matter")
+	}
+	if strings.Contains(base, "/a") {
+		t.Fatalf("the identity must not contain the environment: %q", base)
+	}
+}
+
+func TestNonStringOwnerErrorNamesTheOwnerField(t *testing.T) {
+	a := newOwnedTestAgent(t, "me", nil)
+	defer closeTestCloser(t, a)
+	_, err := a.resolveSessionConfig(newStateContext(t, map[string]any{SessionStateKey: map[string]any{"session_id": "x", "owner": 5}, CWDStateKey: t.TempDir()}))
+	if err == nil || !strings.Contains(err.Error(), "owner must be a string") {
+		t.Fatalf("error = %v, want one naming the owner field", err)
+	}
+	if strings.Contains(err.Error(), "parked") {
+		t.Fatalf("error blames the parked field: %v", err)
+	}
 }

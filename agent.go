@@ -234,7 +234,7 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 		lifecycle: lifecycle, processContext: ctx, protectAttachments: cfg.LazyInitialization || cfg.SetupTimeout > 0, cancelLifecycle: cancelLifecycle, clientConfig: clientConfig,
 		setupTimeout: cfg.SetupTimeout, initializeTimeout: cfg.InitializeTimeout, initializationGate: make(chan struct{}, 1),
 		workingDir:                cfg.WorkingDir,
-		ownerKey:                  agentOwnerKey(cfg.Name, cfg.Command),
+		ownerKey:                  agentOwnerKey(cfg.Name, cfg.Command, cfg.Environment),
 		sessionConfig:             normalizeSessionConfigValues(cfg.SessionConfig),
 		reasoningEffort:           strings.TrimSpace(cfg.ReasoningEffort),
 		outputKey:                 strings.TrimSpace(cfg.OutputKey),

@@ -558,7 +558,7 @@ func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSession
 	}
 	cfg, err = a.applyForeignOwnership(cfg, state)
 	if err != nil {
-		return acpSessionConfig{}, fmt.Errorf("adk session state %q.%s: %w", SessionStateKey, parkedStateField, err)
+		return acpSessionConfig{}, fmt.Errorf("adk session state %q ownership: %w", SessionStateKey, err)
 	}
 	cfg, err = addReasoningEffortToSessionConfig(cfg, a.reasoningEffort)
 	if err != nil {
