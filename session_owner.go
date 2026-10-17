@@ -32,16 +32,19 @@ const (
 var parkNow = time.Now
 
 // agentOwnerKey identifies an agent in the shared ACP session state by its name
-// and the command and environment that start its backend. The name alone is not
-// enough: agents that keep the default name would all look like the same owner,
-// and two agents with one command but a different environment (another home
-// directory, another credential) are different backends. Only a truncated hash
-// is stored, never the command or the environment themselves. A changed command
-// or environment is a different backend, so its stored session is not reused.
-func agentOwnerKey(name string, command, environment []string) string {
+// and by what starts its backend: the command, the environment and the working
+// directory of the subprocess. The name alone is not enough: agents that keep
+// the default name would all look like the same owner, and two agents with one
+// name and command but another environment (a different CODEX_HOME or provider
+// profile, another credential) or another working directory are different
+// backends whose sessions must not be resumed by each other. Only a truncated
+// hash is stored, never the command, the environment or the directory
+// themselves. A changed backend is a different owner, so its stored session is
+// not reused.
+func agentOwnerKey(name string, command, environment []string, workingDir string) string {
 	env := append([]string(nil), environment...)
 	sort.Strings(env)
-	input := strings.Join(command, "\x00") + "\x01" + strings.Join(env, "\x00")
+	input := strings.Join(command, "\x00") + "\x01" + strings.Join(env, "\x00") + "\x02" + workingDir
 	sum := sha256.Sum256([]byte(input))
 	return strings.TrimSpace(name) + ":" + hex.EncodeToString(sum[:4])
 }

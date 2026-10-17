@@ -37,7 +37,7 @@
 //     canonical ACP session ID in the live ADK session state under
 //     `state[SessionStateKey]`.
 //   - The adapter records its identity, its name plus a fingerprint of the
-//     command and environment that start its backend, under `state[SessionStateKey].owner` and only
+//     command, environment and working directory that start its backend, under `state[SessionStateKey].owner` and only
 //     resumes a session id it created. When several agents share one ADK
 //     session, for example in a failover pool, the id and config values of
 //     another agent are never used: the sessions of other agents are kept under

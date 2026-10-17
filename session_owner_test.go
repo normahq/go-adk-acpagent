@@ -371,20 +371,23 @@ func TestParkedSessionsAreBounded(t *testing.T) {
 
 func TestOwnerIdentityCoversNameCommandAndEnvironment(t *testing.T) {
 	command := []string{"agent", "acp"}
-	base := agentOwnerKey("same", command, []string{"HOME=/a"})
-	if base != agentOwnerKey("same", command, []string{"HOME=/a"}) {
+	base := agentOwnerKey("same", command, []string{"HOME=/a"}, "/work")
+	if base != agentOwnerKey("same", command, []string{"HOME=/a"}, "/work") {
 		t.Fatal("the identity must be stable")
 	}
-	if base == agentOwnerKey("same", command, []string{"HOME=/b"}) {
+	if base == agentOwnerKey("same", command, []string{"HOME=/b"}, "/work") {
 		t.Fatal("agents with another environment must be distinct owners")
 	}
-	if base == agentOwnerKey("same", []string{"agent", "acp", "--x"}, []string{"HOME=/a"}) {
+	if base == agentOwnerKey("same", command, []string{"HOME=/a"}, "/other") {
+		t.Fatal("agents with another working directory must be distinct owners")
+	}
+	if base == agentOwnerKey("same", []string{"agent", "acp", "--x"}, []string{"HOME=/a"}, "/work") {
 		t.Fatal("agents with another command must be distinct owners")
 	}
-	if base == agentOwnerKey("other", command, []string{"HOME=/a"}) {
+	if base == agentOwnerKey("other", command, []string{"HOME=/a"}, "/work") {
 		t.Fatal("agents with another name must be distinct owners")
 	}
-	if agentOwnerKey("same", command, []string{"B=2", "A=1"}) != agentOwnerKey("same", command, []string{"A=1", "B=2"}) {
+	if agentOwnerKey("same", command, []string{"B=2", "A=1"}, "/work") != agentOwnerKey("same", command, []string{"A=1", "B=2"}, "/work") {
 		t.Fatal("the order of environment entries must not matter")
 	}
 	if strings.Contains(base, "/a") {
@@ -401,5 +404,52 @@ func TestNonStringOwnerErrorNamesTheOwnerField(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "parked") {
 		t.Fatalf("error blames the parked field: %v", err)
+	}
+}
+
+func newBackendAgent(t *testing.T, workingDir string, environment []string) *Agent {
+	t.Helper()
+	a, err := NewWithContext(t.Context(), Config{
+		Name:        "provider",
+		Command:     helperCommandWithEnv(t, nil),
+		Environment: environment,
+		WorkingDir:  workingDir,
+	})
+	if err != nil {
+		t.Fatalf("NewWithContext() error = %v", err)
+	}
+	return a
+}
+
+func TestSameNameAndCommandWithAnotherProfileIsADifferentOwner(t *testing.T) {
+	dir := t.TempDir()
+	profileA := newBackendAgent(t, dir, append(os.Environ(), "CODEX_HOME=/profiles/a"))
+	defer closeTestCloser(t, profileA)
+	profileB := newBackendAgent(t, dir, append(os.Environ(), "CODEX_HOME=/profiles/b"))
+	defer closeTestCloser(t, profileB)
+	if profileA.Name() != profileB.Name() {
+		t.Fatalf("names differ: %q, %q", profileA.Name(), profileB.Name())
+	}
+	if profileA.ownerID() == profileB.ownerID() {
+		t.Fatalf("identical name and command with another CODEX_HOME share the owner %q", profileA.ownerID())
+	}
+
+	state := map[string]any{"session_id": "profile-a-session", "owner": profileA.ownerID()}
+	cfg, err := profileB.resolveSessionConfig(newStateContext(t, map[string]any{SessionStateKey: state, CWDStateKey: t.TempDir()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.sessionID != "" {
+		t.Fatalf("profile B resumed the session %q of profile A", cfg.sessionID)
+	}
+}
+
+func TestSameNameAndCommandInAnotherWorkingDirectoryIsADifferentOwner(t *testing.T) {
+	first := newBackendAgent(t, t.TempDir(), nil)
+	defer closeTestCloser(t, first)
+	second := newBackendAgent(t, t.TempDir(), nil)
+	defer closeTestCloser(t, second)
+	if first.ownerID() == second.ownerID() {
+		t.Fatalf("identical name and command in another working directory share the owner %q", first.ownerID())
 	}
 }
