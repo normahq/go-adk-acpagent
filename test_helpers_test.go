@@ -16,8 +16,11 @@ import (
 )
 
 func TestACPHelperProcess(t *testing.T) {
-	if os.Getenv("GO_WANT_ACP_HELPER") != "1" {
+	if os.Getenv("GO_WANT_ACP_HELPER") != "1" && !helperProcessArgument("--acp-helper") {
 		return
+	}
+	if path := helperProcessArgumentValue("--env-dump="); path != "" {
+		must(os.WriteFile(path, []byte(strings.Join(os.Environ(), "\n")), 0600))
 	}
 	if path := os.Getenv("GO_PID_LOG"); path != "" {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -31,6 +34,24 @@ func TestACPHelperProcess(t *testing.T) {
 		time.Sleep(time.Minute)
 	}
 	os.Exit(0)
+}
+
+func helperProcessArgument(want string) bool {
+	for _, arg := range os.Args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func helperProcessArgumentValue(prefix string) string {
+	for _, arg := range os.Args {
+		if value, ok := strings.CutPrefix(arg, prefix); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 func runACPHelper(stdin *os.File, stdout *os.File) {
