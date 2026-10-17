@@ -66,6 +66,12 @@ const (
 	//   - "session_id" (string): canonical ACP session id returned by the ACP
 	//     agent and used for ACP session/resume
 	//
+	// The agent also records itself under "owner" and keeps the sessions of
+	// other agents that shared this ADK session under "parked". An agent never
+	// resumes a session id that another agent created; it resumes the one parked
+	// for it, or starts a new session. A state without "owner" belongs to the
+	// current agent.
+	//
 	// This state is the source of truth for ACP session identity. If the ADK
 	// session is deleted, this state is deleted with it and no in-memory ACP
 	// session binding is reused.
@@ -429,7 +435,7 @@ func (a *Agent) persistRemoteSessionBinding(ctx adkagent.InvocationContext, remo
 		return nil
 	}
 
-	acpState := buildACPStateWithConfigValues(remoteSessionID, metaJSON, configValues)
+	acpState := a.ownedState(ctx.Session(), buildACPStateWithConfigValues(remoteSessionID, metaJSON, configValues))
 	if currentACPStateMatches(ctx.Session(), remoteSessionID, metaJSON) {
 		if err := ctx.Session().State().Set(SessionStateKey, cloneAnyMap(acpState)); err != nil {
 			return fmt.Errorf("set live acp session state: %w", err)
@@ -550,6 +556,10 @@ func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSession
 		}
 		cfg.configValues = configValues
 	}
+	cfg, err = a.applyForeignOwnership(cfg, state)
+	if err != nil {
+		return acpSessionConfig{}, fmt.Errorf("adk session state %q.%s: %w", SessionStateKey, parkedStateField, err)
+	}
 	cfg, err = addReasoningEffortToSessionConfig(cfg, a.reasoningEffort)
 	if err != nil {
 		return acpSessionConfig{}, err
@@ -587,7 +597,7 @@ func normalizeACPConfigCWD(cfg acpSessionConfig) (acpSessionConfig, error) {
 }
 
 func (a *Agent) persistAttachmentOutcome(ctx adkagent.InvocationContext, cfg acpSessionConfig, pending bool, yield func(*session.Event, error) bool) error {
-	state := buildACPStateWithConfigValues(cfg.sessionID, cfg.metaJSON, cfg.configValues)
+	state := a.ownedState(ctx.Session(), buildACPStateWithConfigValues(cfg.sessionID, cfg.metaJSON, cfg.configValues))
 	if pending {
 		state["attachment_indeterminate"] = true
 	}

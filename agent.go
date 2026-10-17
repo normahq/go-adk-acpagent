@@ -348,6 +348,7 @@ func (a *Agent) ensureInitialized(ctx context.Context) error {
 
 func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
+		yield = a.stampOwnership(ctx, yield)
 		if err := a.ensureInitialized(ctx); err != nil {
 			yield(nil, err)
 			return
