@@ -1,9 +1,11 @@
 package acperror
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
+	acp "github.com/coder/acp-go-sdk"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -12,10 +14,14 @@ func TestFromWireDataExtractsProviderError(t *testing.T) {
 
 	err, ok := FromWireData(map[string]any{
 		"provider_error": map[string]any{
-			"kind":       "quota_exceeded",
-			"message":    "quota exceeded",
-			"request_id": "req-1",
-			"retryable":  false,
+			"kind":        "quota_exceeded",
+			"message":     "quota exceeded",
+			"code":        "usageLimitExceeded",
+			"scope":       "account",
+			"http_status": float64(429),
+			"retry_at":    float64(1_792_231_200),
+			"request_id":  "req-1",
+			"retryable":   false,
 		},
 	})
 	if !ok {
@@ -29,6 +35,15 @@ func TestFromWireDataExtractsProviderError(t *testing.T) {
 	}
 	if err.RequestID != "req-1" {
 		t.Fatalf("RequestID = %q", err.RequestID)
+	}
+	if err.Code != "usageLimitExceeded" || err.Scope != ScopeAccount {
+		t.Fatalf("Code/Scope = %q/%q", err.Code, err.Scope)
+	}
+	if err.HTTPStatus == nil || *err.HTTPStatus != 429 {
+		t.Fatalf("HTTPStatus = %v, want 429", err.HTTPStatus)
+	}
+	if err.RetryAt == nil || *err.RetryAt != 1_792_231_200 {
+		t.Fatalf("RetryAt = %v, want 1792231200", err.RetryAt)
 	}
 	if err.Retryable == nil || *err.Retryable {
 		t.Fatalf("Retryable = %v, want false", err.Retryable)
@@ -77,22 +92,57 @@ func TestProviderErrorMetadata(t *testing.T) {
 	}
 
 	retryable := true
+	httpStatus := 503
+	retryAt := int64(1_792_231_200)
 	err := &ProviderError{
-		Kind:      KindUnavailable,
-		Message:   "temporarily unavailable",
-		RequestID: "req-1",
-		Provider:  "test-provider",
-		Retryable: &retryable,
+		Kind:       KindUnavailable,
+		Message:    "temporarily unavailable",
+		Code:       "serverOverloaded",
+		Scope:      ScopeProvider,
+		HTTPStatus: &httpStatus,
+		RetryAt:    &retryAt,
+		RequestID:  "req-1",
+		Provider:   "test-provider",
+		Retryable:  &retryable,
 	}
 	want := map[string]any{
-		"kind":       string(KindUnavailable),
-		"message":    "temporarily unavailable",
-		"request_id": "req-1",
-		"provider":   "test-provider",
-		"retryable":  true,
+		"kind":        string(KindUnavailable),
+		"message":     "temporarily unavailable",
+		"code":        "serverOverloaded",
+		"scope":       "provider",
+		"http_status": 503,
+		"retry_at":    int64(1_792_231_200),
+		"request_id":  "req-1",
+		"provider":    "test-provider",
+		"retryable":   true,
 	}
 	if diff := cmp.Diff(want, err.Metadata()); diff != "" {
 		t.Errorf("Metadata() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestFromRequestError(t *testing.T) {
+	t.Parallel()
+
+	reqErr := &acp.RequestError{
+		Code:    -32603,
+		Message: "Provider request failed",
+		Data: map[string]any{
+			"provider_error": map[string]any{"kind": "session_exhausted", "scope": "session"},
+		},
+	}
+	providerErr, gotReqErr, ok := FromRequestError(reqErr)
+	if !ok {
+		t.Fatal("FromRequestError() ok = false, want true")
+	}
+	if gotReqErr != reqErr {
+		t.Fatalf("request error = %p, want %p", gotReqErr, reqErr)
+	}
+	if providerErr.Kind != KindSessionExhausted || providerErr.Scope != ScopeSession {
+		t.Fatalf("provider error = %#v, want session_exhausted/session", providerErr)
+	}
+	if _, _, ok := FromRequestError(errors.New("plain")); ok {
+		t.Fatal("FromRequestError(plain) ok = true, want false")
 	}
 }
 

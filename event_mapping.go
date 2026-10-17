@@ -14,6 +14,8 @@ import (
 	"google.golang.org/genai"
 )
 
+const acpRequestErrorMetadataKey = "acp_request_error"
+
 const (
 	acpTypeText       = "text"
 	acpTypeImage      = "image"
@@ -235,6 +237,22 @@ func copyACPProviderErrorMetadata(ev *session.Event, meta map[string]any) {
 	ev.ErrorCode = "acp_provider_error:" + string(providerErr.Kind)
 	ev.ErrorMessage = providerErr.Error()
 	ev.CustomMetadata[acperror.ProviderErrorMetadataKey] = providerErr.Metadata()
+}
+
+func copyACPRequestError(ev *session.Event, providerErr *acperror.ProviderError, reqErr *acp.RequestError) {
+	if ev == nil || providerErr == nil || reqErr == nil {
+		return
+	}
+	if ev.CustomMetadata == nil {
+		ev.CustomMetadata = map[string]any{}
+	}
+	ev.ErrorCode = fmt.Sprintf("acp_request_error:%d", reqErr.Code)
+	ev.ErrorMessage = reqErr.Message
+	ev.CustomMetadata[acperror.ProviderErrorMetadataKey] = providerErr.Metadata()
+	ev.CustomMetadata[acpRequestErrorMetadataKey] = map[string]any{
+		"code":    reqErr.Code,
+		"message": reqErr.Message,
+	}
 }
 
 func mapACPUserMessageChunk(ctx context.Context, logger logger, invocationID string, chunk *acp.SessionUpdateUserMessageChunk) (*session.Event, bool) {

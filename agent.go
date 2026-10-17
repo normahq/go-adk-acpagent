@@ -11,6 +11,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/normahq/go-adk-acpagent/v2/acperror"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
@@ -130,6 +131,8 @@ type promptRunResult struct {
 	finalOutput        string
 	latestPlanSnapshot map[string]any
 	terminalError      *terminalPromptError
+	providerError      *acperror.ProviderError
+	requestError       *acp.RequestError
 	consumerStopped    bool
 }
 
@@ -417,14 +420,17 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			return
 		}
 		ev := session.NewEvent(ctx, ctx.InvocationID())
-		if result.promptResult != nil {
+		if result.promptResult != nil && result.promptResult.Err == nil {
 			ev.FinishReason = mapACPStopReasonToFinishReason(result.promptResult.Response.StopReason)
 			ev.UsageMetadata = mapACPUsageToUsageMetadata(result.promptResult.Usage)
 			copyACPProviderErrorMetadata(ev, result.promptResult.Response.Meta)
 		}
-		switch {
-		case result.finalOutput != "":
+		if result.finalOutput != "" {
 			ev.Content = genai.NewContentFromText(result.finalOutput, genai.RoleModel)
+		}
+		switch {
+		case result.providerError != nil:
+			copyACPRequestError(ev, result.providerError, result.requestError)
 		case result.terminalError != nil:
 			ev.ErrorMessage = result.terminalError.Message
 			ev.ErrorCode = result.terminalError.Code
@@ -513,6 +519,12 @@ func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Con
 	}
 
 	if out.promptResult != nil && out.promptResult.Err != nil {
+		if providerErr, reqErr, ok := acperror.FromRequestError(out.promptResult.Err); ok {
+			out.providerError = providerErr
+			out.requestError = reqErr
+			out.finalOutput = finalText.String()
+			return out, nil
+		}
 		return promptRunResult{}, out.promptResult.Err
 	}
 

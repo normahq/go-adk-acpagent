@@ -24,6 +24,13 @@ Provider errors carried in ACP message metadata are copied into:
 Use `acperror.FromADKMetadata` to read provider error metadata from an ADK
 event.
 
+An ACP JSON-RPC prompt error containing `error.data.provider_error` also
+becomes one final ADK event. The typed provider error is stored under the same
+metadata key, while `event.CustomMetadata["acp_request_error"]` retains the ACP
+error code and bounded message. Visible output streamed before the error is
+kept on the final event; raw provider diagnostics from `error.data.error` are
+not copied into ADK metadata.
+
 ## Content Blocks
 
 Supported ACP content blocks map to ADK parts:
@@ -119,7 +126,8 @@ On every successful prompt, the adapter emits one final ADK event:
 - `TurnComplete` is true.
 - `FinishReason` is copied from the ACP stop reason when available.
 - final visible output becomes model text content when present.
-- terminal provider failures become `ErrorCode` and `ErrorMessage`.
+- terminal provider failures become `ErrorCode` and `ErrorMessage`; structured
+  JSON-RPC failures also retain typed provider metadata.
 - terminal prompt-result `_meta.error` payloads are also projected into
   `ErrorCode` and `ErrorMessage` when the prompt ends without visible output.
 - `SessionStateKey` is updated with the current ACP session binding and config

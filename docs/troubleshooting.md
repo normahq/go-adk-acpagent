@@ -64,7 +64,8 @@ providerErr, ok := acperror.FromADKMetadata(event.CustomMetadata)
 ```
 
 Known kinds include quota, authentication, payment, rate limit, unavailable,
-invalid request, and unknown.
+session exhaustion, invalid request, and unknown. Use `Kind`, `Scope`, and
+`RetryAt` for policy; the legacy `Retryable` field is compatibility data only.
 
 ## Inspecting ACP Agents
 
