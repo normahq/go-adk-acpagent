@@ -7,12 +7,78 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 )
 
-func (c *Client) clearActive(sessionID acp.SessionId) {
+func (c *Client) beginSessionOperation(active *activePrompt) error {
+	if active == nil || active.sessionID == "" {
+		return errSessionIDRequired
+	}
+	if c.closing.Load() {
+		return ErrClientClosed
+	}
 	select {
-	case c.deactivate <- sessionID:
 	case <-c.closed:
-		<-c.dispatchDone
-		c.closeActiveSession(sessionID)
+		return ErrClientClosed
+	default:
+	}
+
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if c.closing.Load() {
+		return ErrClientClosed
+	}
+	if c.activeBySession[active.sessionID] != nil {
+		return ErrSessionOperationActive
+	}
+	c.activeBySession[active.sessionID] = active
+	active.admitted = true
+	return nil
+}
+
+func (c *Client) endSessionOperation(active *activePrompt) {
+	if active == nil || !active.admitted {
+		return
+	}
+	active.releaseOnce.Do(func() {
+		c.stateMu.Lock()
+		if c.activeBySession[active.sessionID] == active {
+			delete(c.activeBySession, active.sessionID)
+		}
+		c.stateMu.Unlock()
+		c.finishSessionUpdates(active)
+	})
+}
+
+func (c *Client) finishSessionUpdates(active *activePrompt) {
+	if active == nil || active.updates == nil {
+		return
+	}
+	active.finishOnce.Do(func() {
+		select {
+		case c.deactivate <- active:
+		case <-c.closed:
+			<-c.dispatchDone
+			closeActivePrompt(active)
+		}
+	})
+}
+
+func closeActivePrompt(active *activePrompt) {
+	if active == nil {
+		return
+	}
+	active.closeOnce.Do(func() {
+		if active.updates != nil {
+			close(active.updates)
+		}
+	})
+}
+
+func (c *Client) clearActive(sessionID acp.SessionId) {
+	c.stateMu.Lock()
+	active := c.activeBySession[sessionID]
+	delete(c.activeBySession, sessionID)
+	c.stateMu.Unlock()
+	if active != nil {
+		closeActivePrompt(active)
 	}
 }
 
@@ -71,12 +137,22 @@ func (c *Client) dispatchUpdates() {
 		select {
 		case <-c.closed:
 			return
-		case sessionID := <-c.deactivate:
-			c.closeActiveSession(sessionID)
+		case active := <-c.deactivate:
+			c.closePromptUpdates(active)
 		case ext := <-c.updates:
 			c.dispatchSessionUpdate(ext)
 		}
 	}
+}
+
+func (c *Client) closePromptUpdates(active *activePrompt) {
+	if active == nil {
+		return
+	}
+	c.stateMu.Lock()
+	active.updatesDone = true
+	c.stateMu.Unlock()
+	closeActivePrompt(active)
 }
 
 func (c *Client) closeActiveSession(sessionID acp.SessionId) {
@@ -86,7 +162,9 @@ func (c *Client) closeActiveSession(sessionID acp.SessionId) {
 	c.stateMu.Unlock()
 	if active != nil {
 		active.closeOnce.Do(func() {
-			close(active.updates)
+			if active.updates != nil {
+				close(active.updates)
+			}
 		})
 	}
 }
@@ -103,9 +181,7 @@ func (c *Client) closeAllActiveSessions() {
 		if prompt == nil {
 			continue
 		}
-		prompt.closeOnce.Do(func() {
-			close(prompt.updates)
-		})
+		closeActivePrompt(prompt)
 	}
 }
 
@@ -113,8 +189,10 @@ func (c *Client) dispatchSessionUpdate(ext ExtendedSessionNotification) {
 	updateType := sessionUpdateKind(ext.Update)
 	c.stateMu.Lock()
 	active := c.activeBySession[ext.SessionId]
-	if active != nil {
+	if active != nil && active.updates != nil && !active.updatesDone {
 		active.lastChunk = loggedACPChunkFromUpdate(ext.Update)
+	} else {
+		active = nil
 	}
 	c.stateMu.Unlock()
 
@@ -136,7 +214,7 @@ func (c *Client) dispatchSessionUpdate(ext ExtendedSessionNotification) {
 		logEvent.Msg("received acp session update")
 	}
 
-	if active == nil {
+	if active == nil || active.updates == nil {
 		return
 	}
 	select {

@@ -1,7 +1,6 @@
 package acpagent
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -74,7 +73,7 @@ func TestNewClientProcessEnvironment(t *testing.T) {
 
 func TestNewClientDoesNotLogEnvironment(t *testing.T) {
 	const secretValue = "do-not-log-environment-value"
-	var logs bytes.Buffer
+	var logs testLogBuffer
 	client, err := NewClient(t.Context(), ClientConfig{
 		Command:     []string{os.Args[0], "-test.run=^TestACPHelperProcess$", "--", "--acp-helper"},
 		Environment: []string{"ACPAGENT_SECRET=" + secretValue},

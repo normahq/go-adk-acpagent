@@ -26,7 +26,9 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) closeProcess() error {
+	c.stateMu.Lock()
 	c.closing.Store(true)
+	c.stateMu.Unlock()
 	if c.cancelProcess != nil {
 		defer c.cancelProcess()
 	}

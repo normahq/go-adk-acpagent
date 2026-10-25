@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	acp "github.com/coder/acp-go-sdk"
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
 )
@@ -46,6 +47,7 @@ type acpSessionConfig struct {
 	cwd                     string
 	meta                    map[string]any
 	metaJSON                string
+	control                 *sessionControlState
 }
 
 type remoteSession struct {
@@ -55,6 +57,17 @@ type remoteSession struct {
 	fresh                   bool
 	firstPromptInstructions string
 	configError             error
+	control                 *sessionControlState
+}
+
+func (r *remoteSession) applyPromptControl(control *sessionControlState) {
+	if r == nil || control == nil {
+		return
+	}
+	r.control = control
+	r.configValues = mergeSessionConfigValues(r.configValues, []SessionConfigValue{
+		SelectSessionConfigValue(control.modelOptionID, control.currentModel),
+	})
 }
 
 const (
@@ -97,7 +110,7 @@ func (a *Agent) maybeSaveOutputToState(event *session.Event, output string) {
 	event.Actions.StateDelta[a.outputKey] = output
 }
 
-func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID, metaJSON string, configValues []SessionConfigValue) {
+func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID, metaJSON string, configValues []SessionConfigValue, controls ...*sessionControlState) {
 	if event == nil || event.Partial || strings.TrimSpace(remoteSessionID) == "" {
 		return
 	}
@@ -105,7 +118,11 @@ func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID, 
 	if event.Actions.StateDelta == nil {
 		event.Actions.StateDelta = make(map[string]any)
 	}
-	event.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues(remoteSessionID, metaJSON, configValues)
+	var control *sessionControlState
+	if len(controls) > 0 {
+		control = controls[0]
+	}
+	event.Actions.StateDelta[SessionStateKey] = buildACPStateWithControl(remoteSessionID, metaJSON, configValues, control)
 }
 
 func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, yield func(*session.Event, error) bool) (remoteSession, error) {
@@ -118,13 +135,31 @@ func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 		return remoteSession{}, ErrSessionAttachmentIndeterminate
 	}
 	if cfg.sessionID != "" {
-		logger.Debug().
-			Str("acp_session_id", cfg.sessionID).
-			Msg("using acp session id from adk session state")
-		if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues); err != nil {
-			return remoteSession{}, err
+		if cfg.control != nil && !authoritativeControl(cfg.control, a.attachmentGeneration) && a.client.SupportsSessionResume() {
+			// Refresh an existing persisted attachment before the first prompt in
+			// this process. Prompt success alone does not make old descriptors
+			// authoritative.
+			snapshot := a.SessionControl().Inspect(logCtx, ctx.Session())
+			if snapshot.Code == "unknown_session" {
+				cfg.sessionID = ""
+				cfg.configValues = nil
+				cfg.control = nil
+			} else {
+				cfg, err = a.resolveSessionConfig(ctx)
+				if err != nil {
+					return remoteSession{}, err
+				}
+			}
 		}
-		return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}, nil
+		if cfg.sessionID != "" {
+			logger.Debug().
+				Str("acp_session_id", cfg.sessionID).
+				Msg("using acp session id from adk session state")
+			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues, cfg.control); err != nil {
+				return remoteSession{}, err
+			}
+			return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON, control: cfg.control}, nil
+		}
 	}
 	instructions, err := a.resolveInstructionParts(ctx)
 	if err != nil {
@@ -143,6 +178,11 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 		return remoteSession{}, err
 	}
 	if cfg.sessionID != "" && a.client.SupportsSessionResume() {
+		active := &activePrompt{sessionID: acp.SessionId(cfg.sessionID), logger: logger}
+		if err := a.client.beginSessionOperation(active); err != nil {
+			return remoteSession{}, err
+		}
+		defer a.client.endSessionOperation(active)
 		setup, cancel := a.setupContext(logCtx)
 		defer cancel()
 		resumeResp, err := a.client.ResumeSessionWithMeta(setup, cfg.sessionID, cfg.cwd, a.mcpServers, cfg.meta)
@@ -150,7 +190,7 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 			err = setup.Err()
 		}
 		if err == nil {
-			configValues, configErr := a.client.applySessionConfigRequired(
+			configValues, finalOptions, configErr := a.client.applySessionConfigRequiredWithOptions(
 				setup,
 				cfg.sessionID,
 				cfg.desiredConfigValues,
@@ -161,10 +201,11 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 			if len(configValues) > 0 {
 				cfg.configValues = configValues
 			}
-			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues); err != nil {
+			control := newSessionControlState(finalOptions, a.attachmentGeneration)
+			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues, control); err != nil {
 				return remoteSession{}, err
 			}
-			remote := remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}
+			remote := remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON, control: control}
 			if configErr != nil {
 				if errors.Is(configErr, context.Canceled) || errors.Is(configErr, context.DeadlineExceeded) {
 					return remoteSession{}, configErr
@@ -180,14 +221,17 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 				Err(err).
 				Str("acp_session_id", cfg.sessionID).
 				Msg("acp session already active after prompt failure")
-			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues); err != nil {
+			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues, cfg.control); err != nil {
 				return remoteSession{}, err
 			}
-			return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}, nil
+			return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON, control: cfg.control}, nil
 		}
 		if !isACPResumeUnknownSessionError(err) {
 			return remoteSession{}, fmt.Errorf("resume acp session %q after prompt failure: %w", cfg.sessionID, err)
 		}
+		// The fallback may reuse the same remote ID, so release the failed
+		// attachment admission before session/new.
+		a.client.endSessionOperation(active)
 		logger.Warn().
 			Err(err).
 			Str("acp_session_id", cfg.sessionID).
@@ -235,6 +279,11 @@ func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 	}
 
 	sessionID := string(resp.SessionId)
+	active := &activePrompt{sessionID: acp.SessionId(sessionID), logger: logger}
+	if err := a.client.beginSessionOperation(active); err != nil {
+		return remoteSession{}, err
+	}
+	defer a.client.endSessionOperation(active)
 	if a.protectAttachments {
 		bound := cfg
 		bound.sessionID = sessionID
@@ -243,7 +292,7 @@ func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 		}
 	}
 	valuesToApply := mergeSessionConfigValues(cfg.configValues, cfg.desiredConfigValues)
-	configValues, configErr := a.client.applySessionConfigRequired(
+	configValues, finalOptions, configErr := a.client.applySessionConfigRequiredWithOptions(
 		setup,
 		sessionID,
 		valuesToApply,
@@ -254,7 +303,8 @@ func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 	if len(configValues) > 0 {
 		cfg.configValues = configValues
 	}
-	if err := a.persistRemoteSessionBinding(ctx, sessionID, cfg.metaJSON, cfg.configValues); err != nil {
+	control := newSessionControlState(finalOptions, a.attachmentGeneration)
+	if err := a.persistRemoteSessionBinding(ctx, sessionID, cfg.metaJSON, cfg.configValues, control); err != nil {
 		return remoteSession{}, err
 	}
 	remote := remoteSession{
@@ -263,6 +313,7 @@ func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 		metaJSON:                cfg.metaJSON,
 		fresh:                   true,
 		firstPromptInstructions: strings.TrimSpace(firstPromptInstructions),
+		control:                 control,
 	}
 	if configErr != nil {
 		if errors.Is(configErr, context.Canceled) || errors.Is(configErr, context.DeadlineExceeded) {
@@ -430,12 +481,16 @@ func parseAnySessionConfigValueMaps(values []map[string]any) ([]SessionConfigVal
 	return normalizeSessionConfigValues(parsed), nil
 }
 
-func (a *Agent) persistRemoteSessionBinding(ctx adkagent.InvocationContext, remoteSessionID, metaJSON string, configValues []SessionConfigValue) error {
+func (a *Agent) persistRemoteSessionBinding(ctx adkagent.InvocationContext, remoteSessionID, metaJSON string, configValues []SessionConfigValue, controls ...*sessionControlState) error {
 	if ctx == nil || ctx.Session() == nil || strings.TrimSpace(remoteSessionID) == "" {
 		return nil
 	}
 
-	acpState := a.ownedState(ctx.Session(), buildACPStateWithConfigValues(remoteSessionID, metaJSON, configValues))
+	var control *sessionControlState
+	if len(controls) > 0 {
+		control = controls[0]
+	}
+	acpState := a.ownedState(ctx.Session(), buildACPStateWithControl(remoteSessionID, metaJSON, configValues, control))
 	if currentACPStateMatches(ctx.Session(), remoteSessionID, metaJSON) {
 		if err := ctx.Session().State().Set(SessionStateKey, cloneAnyMap(acpState)); err != nil {
 			return fmt.Errorf("set live acp session state: %w", err)
@@ -501,11 +556,21 @@ func normalizeACPStateMetaJSONFromRaw(raw string) string {
 }
 
 func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSessionConfig, error) {
+	if ctx == nil {
+		return acpSessionConfig{}, errors.New("adk invocation context is required")
+	}
+	return a.resolveSessionConfigForSession(ctx.Session())
+}
+
+func (a *Agent) resolveSessionConfigForSession(sess session.Session) (acpSessionConfig, error) {
+	if sess == nil {
+		return acpSessionConfig{}, errors.New("adk session is required")
+	}
 	cfg := acpSessionConfig{
 		cwd:                 strings.TrimSpace(a.workingDir),
 		desiredConfigValues: cloneSessionConfigValues(a.sessionConfig),
 	}
-	rawCWD, err := ctx.Session().State().Get(CWDStateKey)
+	rawCWD, err := sess.State().Get(CWDStateKey)
 	if err != nil {
 		if !errors.Is(err, session.ErrStateKeyNotExist) {
 			return acpSessionConfig{}, fmt.Errorf("read %q from adk session state: %w", CWDStateKey, err)
@@ -518,7 +583,7 @@ func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSession
 		cfg.cwd = strings.TrimSpace(cwd)
 	}
 
-	rawState, err := ctx.Session().State().Get(SessionStateKey)
+	rawState, err := sess.State().Get(SessionStateKey)
 	if err != nil {
 		if errors.Is(err, session.ErrStateKeyNotExist) {
 			cfg, cfgErr := addReasoningEffortToSessionConfig(cfg, a.reasoningEffort)
@@ -556,6 +621,7 @@ func (a *Agent) resolveSessionConfig(ctx adkagent.InvocationContext) (acpSession
 		}
 		cfg.configValues = configValues
 	}
+	cfg.control = parseSessionControlState(state[controlStateField])
 	cfg, err = a.applyForeignOwnership(cfg, state)
 	if err != nil {
 		return acpSessionConfig{}, fmt.Errorf("adk session state %q ownership: %w", SessionStateKey, err)

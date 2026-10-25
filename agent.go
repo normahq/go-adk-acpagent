@@ -139,6 +139,7 @@ type Agent struct {
 	mcpServers                []acp.McpServer
 	promptSupport             promptSupport
 	ownerKey                  string
+	attachmentGeneration      string
 }
 
 type promptRunResult struct {
@@ -149,6 +150,16 @@ type promptRunResult struct {
 	providerError      *acperror.ProviderError
 	requestError       *acp.RequestError
 	consumerStopped    bool
+	control            *sessionControlState
+	releaseOperation   func()
+}
+
+func (r *promptRunResult) release() {
+	if r == nil || r.releaseOperation == nil {
+		return
+	}
+	r.releaseOperation()
+	r.releaseOperation = nil
 }
 
 const (
@@ -228,6 +239,10 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 	if cfg.SetupTimeout < 0 {
 		return nil, errors.New("setup timeout must not be negative")
 	}
+	attachmentGeneration, err := newAttachmentGeneration()
+	if err != nil {
+		return nil, fmt.Errorf("create attachment generation: %w", err)
+	}
 	mcpServers, err := convertMCPServers(cfg.MCPServers)
 	if err != nil {
 		return nil, fmt.Errorf("convert mcp servers: %w", err)
@@ -248,6 +263,7 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 		setupTimeout: cfg.SetupTimeout, initializeTimeout: cfg.InitializeTimeout, initializationGate: make(chan struct{}, 1),
 		workingDir:                cfg.WorkingDir,
 		ownerKey:                  resolveOwnerKey(cfg.SessionOwner, cfg.Name, cfg.Command, environment, cfg.WorkingDir),
+		attachmentGeneration:      attachmentGeneration,
 		sessionConfig:             normalizeSessionConfigValues(cfg.SessionConfig),
 		reasoningEffort:           strings.TrimSpace(cfg.ReasoningEffort),
 		outputKey:                 strings.TrimSpace(cfg.OutputKey),
@@ -397,7 +413,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			promptForRun = prependInstructionsToContent(remote.firstPromptInstructions, prompt)
 		}
 		stateEvent := session.NewEvent(ctx, ctx.InvocationID())
-		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
+		a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues, remote.control)
 		if len(stateEvent.Actions.StateDelta) > 0 {
 			a.logADKEvent(logger, stateEvent, "yielding acp session state event")
 			if !yield(stateEvent, nil) {
@@ -406,10 +422,13 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		}
 
 		result, err := a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun, yield)
+		remote.applyPromptControl(result.control)
 		if result.consumerStopped {
+			result.release()
 			return
 		}
 		if err != nil && isACPSessionNotFoundError(err) {
+			result.release()
 			recovered, recoverErr := a.recoverRemoteSession(ctx, logCtx, logger, err, yield)
 			if recoverErr != nil {
 				yield(nil, recoverErr)
@@ -424,7 +443,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 				promptForRun = prependInstructionsToContent(remote.firstPromptInstructions, prompt)
 			}
 			stateEvent := session.NewEvent(ctx, ctx.InvocationID())
-			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues)
+			a.persistSessionStateDelta(stateEvent, remote.id, remote.metaJSON, remote.configValues, remote.control)
 			if len(stateEvent.Actions.StateDelta) > 0 {
 				a.logADKEvent(logger, stateEvent, "yielding recovered acp session state event")
 				if !yield(stateEvent, nil) {
@@ -432,10 +451,13 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 				}
 			}
 			result, err = a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun, yield)
+			remote.applyPromptControl(result.control)
 			if result.consumerStopped {
+				result.release()
 				return
 			}
 		}
+		defer result.release()
 		if err != nil {
 			yield(nil, err)
 			return
@@ -464,7 +486,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		if result.latestPlanSnapshot != nil {
 			ev.Actions.StateDelta[PlanStateKey] = result.latestPlanSnapshot
 		}
-		a.persistSessionStateDelta(ev, remote.id, remote.metaJSON, remote.configValues)
+		a.persistSessionStateDelta(ev, remote.id, remote.metaJSON, remote.configValues, remote.control)
 		a.maybeSaveOutputToState(ev, result.finalOutput)
 		ev.TurnComplete = true
 		a.logADKEvent(logger, ev, "yielding final turn complete event")
@@ -480,7 +502,7 @@ func (a *Agent) yieldSessionConfigError(ctx adkagent.InvocationContext, logger l
 	}
 	ev := session.NewEvent(ctx, ctx.InvocationID())
 	ev.ErrorMessage = remote.configError.Error()
-	a.persistSessionStateDelta(ev, remote.id, remote.metaJSON, remote.configValues)
+	a.persistSessionStateDelta(ev, remote.id, remote.metaJSON, remote.configValues, remote.control)
 	ev.TurnComplete = true
 	a.logADKEvent(logger, ev, "yielding acp session config error event")
 	yield(ev, nil)
@@ -488,24 +510,23 @@ func (a *Agent) yieldSessionConfigError(ctx adkagent.InvocationContext, logger l
 }
 
 func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, remoteSessionID string, prompt []acp.ContentBlock, yield func(*session.Event, error) bool) (promptRunResult, error) {
-	var out promptRunResult
-
 	logger.Debug().
 		Str("acp_session_id", remoteSessionID).
 		Int("prompt_blocks", len(prompt)).
 		Interface("prompt_block_summary", promptBlockLogs(prompt)).
 		Msg("starting adk invocation")
 
-	updates, resultCh, err := a.client.PromptWithContent(logCtx, remoteSessionID, prompt)
+	updates, resultCh, release, err := a.client.promptWithContentHeld(logCtx, remoteSessionID, prompt)
 	if err != nil {
 		return promptRunResult{}, err
 	}
+	out := promptRunResult{releaseOperation: release}
 
 	var finalText strings.Builder
 	for updates != nil || resultCh != nil {
 		select {
 		case <-ctx.Done():
-			return promptRunResult{}, ctx.Err()
+			return out, ctx.Err()
 		case ext, ok := <-updates:
 			if !ok {
 				updates = nil
@@ -517,6 +538,15 @@ func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Con
 			ev, ok := mapACPUpdateToEvent(ctx, logger, ctx.InvocationID(), ext)
 			if !ok {
 				continue
+			}
+			if update := ext.Update.ConfigOptionUpdate; update != nil {
+				control := newSessionControlState(update.ConfigOptions, a.attachmentGeneration)
+				if control != nil {
+					if state, ok := ev.Actions.StateDelta[SessionStateKey].(map[string]any); ok {
+						state[controlStateField] = control.toState()
+					}
+					out.control = control
+				}
 			}
 			if ext.Update.AgentMessageChunk != nil {
 				finalText.WriteString(contentVisibleText(ev.Content))
@@ -546,7 +576,7 @@ func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Con
 			out.finalOutput = finalText.String()
 			return out, nil
 		}
-		return promptRunResult{}, out.promptResult.Err
+		return out, out.promptResult.Err
 	}
 
 	logger.Debug().

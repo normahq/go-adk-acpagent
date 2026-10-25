@@ -20,6 +20,11 @@ var (
 	// ErrPromptAlreadyActive is returned when a prompt is already in progress for
 	// the same ACP session ID.
 	ErrPromptAlreadyActive = errors.New("acp prompt already active")
+	// ErrSessionOperationActive is returned when another operation already owns
+	// the same ACP session admission slot.
+	ErrSessionOperationActive = errors.New("acp session operation already active")
+	// ErrClientClosed is returned when the ACP client is closing or closed.
+	ErrClientClosed = errors.New("acp client is closed")
 
 	errSessionIDRequired = errors.New("acp session id is required")
 	errPromptRequired    = errors.New("acp prompt is required")
@@ -99,7 +104,7 @@ type Client struct {
 	stateMu         sync.Mutex
 	activeBySession map[acp.SessionId]*activePrompt
 	updates         chan ExtendedSessionNotification
-	deactivate      chan acp.SessionId
+	deactivate      chan *activePrompt
 	agentCaps       acp.AgentCapabilities
 	promptSupport   promptSupport
 
@@ -113,12 +118,16 @@ type Client struct {
 }
 
 type activePrompt struct {
-	sessionID acp.SessionId
-	updates   chan ExtendedSessionNotification
-	signal    chan struct{}
-	logger    logger
-	lastChunk *loggedACPChunk
-	closeOnce sync.Once
+	sessionID   acp.SessionId
+	updates     chan ExtendedSessionNotification
+	signal      chan struct{}
+	logger      logger
+	lastChunk   *loggedACPChunk
+	closeOnce   sync.Once
+	releaseOnce sync.Once
+	finishOnce  sync.Once
+	admitted    bool
+	updatesDone bool
 }
 
 type loggedACPChunk struct {
@@ -214,7 +223,7 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		logger:            l,
 		activeBySession:   make(map[acp.SessionId]*activePrompt),
 		updates:           make(chan ExtendedSessionNotification, 256),
-		deactivate:        make(chan acp.SessionId, 256),
+		deactivate:        make(chan *activePrompt, 256),
 		closed:            make(chan struct{}),
 		dispatchDone:      make(chan struct{}),
 	}
@@ -497,8 +506,16 @@ func (c *Client) applySessionConfig(ctx context.Context, sessionID string, value
 }
 
 func (c *Client) applySessionConfigRequired(ctx context.Context, sessionID string, values []SessionConfigValue, configOptions []acp.SessionConfigOption, modes *acp.SessionModeState, requiredValues []SessionConfigValue) ([]SessionConfigValue, error) {
+	confirmed, _, err := c.applySessionConfigRequiredWithOptions(ctx, sessionID, values, configOptions, modes, requiredValues)
+	return confirmed, err
+}
+
+func (c *Client) applySessionConfigRequiredWithOptions(ctx context.Context, sessionID string, values []SessionConfigValue, configOptions []acp.SessionConfigOption, modes *acp.SessionModeState, requiredValues []SessionConfigValue) ([]SessionConfigValue, []acp.SessionConfigOption, error) {
 	l := c.loggerForContext(ctx)
 	currentOptions := configOptions
+	result := func(err error) ([]SessionConfigValue, []acp.SessionConfigOption, error) {
+		return collectSessionConfigValues(currentOptions, modes), currentOptions, err
+	}
 	requiredIDs := sessionConfigValueIDs(requiredValues)
 	for _, value := range normalizeSessionConfigValues(values) {
 		optionID := strings.TrimSpace(value.ID)
@@ -509,13 +526,13 @@ func (c *Client) applySessionConfigRequired(ctx context.Context, sessionID strin
 			}
 			req, err := buildSetSessionConfigOptionRequest(sessionID, optionID, value, *option)
 			if err != nil {
-				return collectSessionConfigValues(currentOptions, modes), err
+				return result(err)
 			}
 			resp, err := c.SetSessionConfigOption(ctx, req)
 			if err != nil {
 				if isACPMethodNotFoundError(err) {
 					if _, required := requiredIDs[optionID]; required {
-						return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("set acp session config option %q: %w", optionID, err)
+						return result(fmt.Errorf("set acp session config option %q: %w", optionID, err))
 					}
 					l.Warn().
 						Str("acp_session_id", sessionID).
@@ -523,7 +540,7 @@ func (c *Client) applySessionConfigRequired(ctx context.Context, sessionID strin
 						Msg("acp session/set_config_option unsupported; continuing")
 					continue
 				}
-				return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("set acp session config option %q: %w", optionID, err)
+				return result(fmt.Errorf("set acp session config option %q: %w", optionID, err))
 			}
 			currentOptions = resp.ConfigOptions
 			continue
@@ -531,7 +548,7 @@ func (c *Client) applySessionConfigRequired(ctx context.Context, sessionID strin
 		if optionID == "mode" && modes != nil {
 			optionValue := strings.TrimSpace(value.Value)
 			if optionValue == "" {
-				return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("acp session mode value is required")
+				return result(fmt.Errorf("acp session mode value is required"))
 			}
 			if strings.TrimSpace(string(modes.CurrentModeId)) == optionValue {
 				continue
@@ -539,7 +556,7 @@ func (c *Client) applySessionConfigRequired(ctx context.Context, sessionID strin
 			if err := c.SetSessionMode(ctx, sessionID, optionValue); err != nil {
 				if isACPMethodNotFoundError(err) {
 					if _, required := requiredIDs[optionID]; required {
-						return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("set acp session mode: %w", err)
+						return result(fmt.Errorf("set acp session mode: %w", err))
 					}
 					l.Warn().
 						Str("acp_session_id", sessionID).
@@ -547,20 +564,20 @@ func (c *Client) applySessionConfigRequired(ctx context.Context, sessionID strin
 						Msg("acp session/set_mode unsupported; continuing")
 					continue
 				}
-				return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("set acp session mode: %w", err)
+				return result(fmt.Errorf("set acp session mode: %w", err))
 			}
 			modes.CurrentModeId = acp.SessionModeId(optionValue)
 			continue
 		}
 		if _, required := requiredIDs[optionID]; required {
-			return collectSessionConfigValues(currentOptions, modes), fmt.Errorf("acp session config option %q is unavailable", optionID)
+			return result(fmt.Errorf("acp session config option %q is unavailable", optionID))
 		}
 		l.Warn().
 			Str("acp_session_id", sessionID).
 			Str("config_option", optionID).
 			Msg("acp session config option unavailable; continuing")
 	}
-	return collectSessionConfigValues(currentOptions, modes), nil
+	return result(nil)
 }
 
 func sessionConfigValueIDs(values []SessionConfigValue) map[string]struct{} {
@@ -800,34 +817,52 @@ func (c *Client) Prompt(ctx context.Context, sessionID, prompt string) (<-chan E
 // session updates. Its channel and cancellation contract is the same as
 // [Client.Prompt].
 func (c *Client) PromptWithContent(ctx context.Context, sessionID string, prompt []acp.ContentBlock) (<-chan ExtendedSessionNotification, <-chan PromptResult, error) {
+	updates, result, _, err := c.promptWithContent(ctx, sessionID, prompt, false)
+	return updates, result, err
+}
+
+func (c *Client) promptWithContentHeld(ctx context.Context, sessionID string, prompt []acp.ContentBlock) (<-chan ExtendedSessionNotification, <-chan PromptResult, func(), error) {
+	return c.promptWithContent(ctx, sessionID, prompt, true)
+}
+
+func (c *Client) promptWithContent(ctx context.Context, sessionID string, prompt []acp.ContentBlock, holdAdmission bool) (<-chan ExtendedSessionNotification, <-chan PromptResult, func(), error) {
 	if len(prompt) == 0 {
-		return nil, nil, errPromptContentReq
+		return nil, nil, nil, errPromptContentReq
 	}
 	if strings.TrimSpace(sessionID) == "" {
-		return nil, nil, errSessionIDRequired
+		return nil, nil, nil, errSessionIDRequired
 	}
 	if err := validatePromptBlocks(prompt, c.promptSupportSnapshot()); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return c.promptWithBlocks(ctx, sessionID, prompt, 0)
+	return c.promptWithBlocksOperation(ctx, sessionID, prompt, 0, holdAdmission)
 }
 
 func (c *Client) promptWithBlocks(ctx context.Context, sessionID string, prompt []acp.ContentBlock, promptLen int) (<-chan ExtendedSessionNotification, <-chan PromptResult, error) {
+	updates, result, _, err := c.promptWithBlocksOperation(ctx, sessionID, prompt, promptLen, false)
+	return updates, result, err
+}
+
+func (c *Client) promptWithBlocksOperation(ctx context.Context, sessionID string, prompt []acp.ContentBlock, promptLen int, holdAdmission bool) (<-chan ExtendedSessionNotification, <-chan PromptResult, func(), error) {
 	if strings.TrimSpace(sessionID) == "" {
-		return nil, nil, errSessionIDRequired
+		return nil, nil, nil, errSessionIDRequired
 	}
 
-	c.stateMu.Lock()
 	activeSessionID := acp.SessionId(sessionID)
-	if c.activeBySession[activeSessionID] != nil {
-		c.stateMu.Unlock()
-		return nil, nil, ErrPromptAlreadyActive
-	}
 	updates := make(chan ExtendedSessionNotification, 64)
 	l := c.loggerForContext(ctx)
 	active := &activePrompt{sessionID: activeSessionID, updates: updates, signal: make(chan struct{}, 1), logger: l}
-	c.activeBySession[activeSessionID] = active
-	c.stateMu.Unlock()
+	if err := c.beginSessionOperation(active); err != nil {
+		if errors.Is(err, ErrSessionOperationActive) {
+			return nil, nil, nil, ErrPromptAlreadyActive
+		}
+		return nil, nil, nil, err
+	}
+	rpcDone := make(chan struct{})
+	release := func() {
+		<-rpcDone
+		c.endSessionOperation(active)
+	}
 
 	promptBlocks := append([]acp.ContentBlock(nil), prompt...)
 	logEvent := l.Debug().
@@ -842,7 +877,10 @@ func (c *Client) promptWithBlocks(ctx context.Context, sessionID string, prompt 
 	resultCh := make(chan PromptResult, 1)
 	go func() {
 		defer close(resultCh)
-		defer c.clearActive(activeSessionID)
+		defer close(rpcDone)
+		if !holdAdmission {
+			defer c.endSessionOperation(active)
+		}
 
 		resp, err := c.conn.Prompt(ctx, acp.PromptRequest{
 			SessionId: activeSessionID,
@@ -852,6 +890,7 @@ func (c *Client) promptWithBlocks(ctx context.Context, sessionID string, prompt 
 		if !suppressLastChunkLogFromContext(ctx) {
 			c.logLastChunkInSeries(activeSessionID)
 		}
+		c.finishSessionUpdates(active)
 		if err != nil {
 			resultCh <- PromptResult{Err: err}
 			return
@@ -865,7 +904,7 @@ func (c *Client) promptWithBlocks(ctx context.Context, sessionID string, prompt 
 		resultCh <- PromptResult{Response: resp, Usage: resp.Usage, Raw: mustMarshalJSON(resp)}
 	}()
 
-	return updates, resultCh, nil
+	return updates, resultCh, release, nil
 }
 
 func suppressLastChunkLogFromContext(ctx context.Context) bool {
