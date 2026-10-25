@@ -170,6 +170,9 @@ func (a *Agent) ownedState(sess session.Session, state map[string]any) map[strin
 			if indeterminate, _ := current["attachment_indeterminate"].(bool); indeterminate {
 				slot["attachment_indeterminate"] = true
 			}
+			if control, ok := current[controlStateField]; ok {
+				slot[controlStateField] = control
+			}
 			slot[parkedAtField] = parkNow().UTC().Format(time.RFC3339Nano)
 			parked[currentOwner] = slot
 		}
@@ -232,6 +235,7 @@ func (a *Agent) applyForeignOwnership(cfg acpSessionConfig, state map[string]any
 	cfg.sessionID = ""
 	cfg.configValues = nil
 	cfg.attachmentIndeterminate = false
+	cfg.control = nil
 	// Parked sessions only exist next to the live session of the agent that took
 	// over. A state whose own session id was cleared was reset, and a reset must
 	// not bring an old session back.
@@ -256,6 +260,7 @@ func (a *Agent) applyForeignOwnership(cfg acpSessionConfig, state map[string]any
 	cfg.sessionID = strings.TrimSpace(sessionID)
 	cfg.configValues = values
 	cfg.attachmentIndeterminate, _ = slot["attachment_indeterminate"].(bool)
+	cfg.control = parseSessionControlState(slot[controlStateField])
 	return cfg, nil
 }
 

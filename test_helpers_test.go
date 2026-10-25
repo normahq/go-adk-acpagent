@@ -105,6 +105,9 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	expectedPromptBlocksRaw := os.Getenv("GO_EXPECT_PROMPT_BLOCKS")
 	forceNewSessionID := os.Getenv("GO_FORCE_NEW_SESSION_ID")
 	disableSetConfigOption := os.Getenv("GO_DISABLE_SET_CONFIG_OPTION") == "1"
+	setConfigOptionError := os.Getenv("GO_SET_CONFIG_OPTION_ERROR")
+	setConfigOptionResponseModel := os.Getenv("GO_SET_CONFIG_OPTION_RESPONSE_MODEL")
+	emptySetConfigOptionResponse := os.Getenv("GO_EMPTY_SET_CONFIG_OPTION_RESPONSE") == "1"
 	disableSetMode := os.Getenv("GO_DISABLE_SET_MODE") == "1"
 	failResumeMethodNotFound := os.Getenv("GO_FAIL_RESUME_METHOD_NOT_FOUND") == "1"
 	failResumeEntityNotFound := os.Getenv("GO_FAIL_RESUME_ENTITY_NOT_FOUND") == "1"
@@ -500,12 +503,29 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				failLoadEntityNotFound,
 			)
 		case acp.AgentMethodSessionSetConfigOption:
+			if setConfigOptionError != "" {
+				code := -32603
+				switch setConfigOptionError {
+				case "invalid_request":
+					code = -32600
+				case "invalid_params":
+					code = -32602
+				case "canceled":
+					code = -32800
+				}
+				writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Error: &helperError{Code: code, Message: setConfigOptionError}})
+				continue
+			}
 			if disableSetConfigOption {
 				writeEnvelope(stdout, helperEnvelope{
 					JSONRPC: "2.0",
 					ID:      msg.ID,
 					Error:   &helperError{Code: -32601, Message: "unsupported"},
 				})
+				continue
+			}
+			if emptySetConfigOptionResponse {
+				writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperSetSessionConfigOptionResponse{})})
 				continue
 			}
 			var req helperSetSessionConfigOptionRequest
@@ -555,7 +575,11 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 					continue
 				}
 			}
-			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperSetSessionConfigOptionResponse{ConfigOptions: helperSessionConfigOptions(expectedSessionModel, expectedConfigID, expectedSessionMode, advertiseModeConfigOption, expectedBooleanConfigID, expectedBooleanConfigValueRaw)})})
+			responseModel := expectedSessionModel
+			if setConfigOptionResponseModel != "" {
+				responseModel = setConfigOptionResponseModel
+			}
+			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperSetSessionConfigOptionResponse{ConfigOptions: helperSessionConfigOptions(responseModel, expectedConfigID, expectedSessionMode, advertiseModeConfigOption, expectedBooleanConfigID, expectedBooleanConfigValueRaw)})})
 		case acp.AgentMethodSessionSetMode:
 			if disableSetMode {
 				writeEnvelope(stdout, helperEnvelope{
