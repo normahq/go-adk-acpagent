@@ -447,6 +447,25 @@ func TestDesiredModelLocalPreDispatchOutcomes(t *testing.T) {
 		}
 	})
 
+	t.Run("already selected on stale attachment", func(t *testing.T) {
+		registry := newModelRegistry()
+		admission, err := registry.acquire(t.Context(), sess)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer admission.release()
+		stale := admission.replaceAttachment("remote-old")
+		current := admission.replaceAttachment("remote-current")
+		controlBefore := admission.entry.control
+		agent := &Agent{desiredModel: "model-a"}
+		if _, err := agent.applyDesiredModelCurrentHeld(t.Context(), admission, "remote-old", options, stale); !errors.Is(err, ErrDesiredModelUnavailable) {
+			t.Fatalf("apply error = %v, want desired model unavailable", err)
+		}
+		if admission.entry.attachmentToken != current || admission.entry.attachmentID != "remote-current" || admission.entry.control != controlBefore {
+			t.Fatalf("stale rejection changed current attachment: %#v", admission.entry)
+		}
+	})
+
 	t.Run("unknown target", func(t *testing.T) {
 		registry := newModelRegistry()
 		admission, err := registry.acquire(t.Context(), sess)
@@ -783,6 +802,7 @@ func TestEnsureInitializedRejectsClosedAndCanceledAgent(t *testing.T) {
 
 func TestDesiredModelExistingAttachmentUnavailablePreventsPrompt(t *testing.T) {
 	workingDir := t.TempDir()
+	methodLog := t.TempDir() + "/methods.log"
 	service := session.InMemoryService()
 	first, err := NewWithContext(t.Context(), Config{
 		Command:      helperCommandWithEnv(t, map[string]string{"GO_CURRENT_SESSION_MODEL": "model-a", "GO_EXPECT_SESSION_MODEL": "model-a"}),
@@ -798,9 +818,13 @@ func TestDesiredModelExistingAttachmentUnavailablePreventsPrompt(t *testing.T) {
 	desired := "model-b"
 	second, err := NewWithContext(t.Context(), Config{
 		Command: helperCommandWithEnv(t, map[string]string{
-			"GO_CURRENT_SESSION_MODEL": "model-a",
-			"GO_EXPECT_SESSION_MODEL":  desired,
-			"GO_SESSION_MODELS":        desired,
+			"GO_CURRENT_SESSION_MODEL":    "model-a",
+			"GO_EXPECT_SESSION_MODEL":     desired,
+			"GO_SESSION_MODELS":           desired,
+			"GO_SUPPORT_SESSION_RESUME":   "1",
+			"GO_EXPECT_RESUME_SESSION_ID": "session-1",
+			"GO_FAIL_METHOD":              "session/resume",
+			"GO_METHOD_LOG":               methodLog,
 		}),
 		WorkingDir:   workingDir,
 		SessionOwner: "stable-owner",
@@ -810,6 +834,14 @@ func TestDesiredModelExistingAttachmentUnavailablePreventsPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTestCloser(t, second)
+	admission, err := second.modelRegistry.acquire(t.Context(), stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenBefore := admission.replaceAttachment("session-1")
+	idBefore := admission.entry.attachmentID
+	controlBefore := admission.entry.control
+	admission.release()
 	r, err := runner.New(runner.Config{AppName: "unavailable-model", Agent: second, SessionService: service})
 	if err != nil {
 		t.Fatal(err)
@@ -822,6 +854,27 @@ func TestDesiredModelExistingAttachmentUnavailablePreventsPrompt(t *testing.T) {
 	}
 	if !errors.Is(gotErr, ErrDesiredModelUnavailable) {
 		t.Fatalf("run error = %v, want model unavailable", gotErr)
+	}
+	methods, err := os.ReadFile(methodLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(methods)
+	if strings.Count(text, "session/resume") != 1 {
+		t.Fatalf("method log resume count = %d, want 1:\n%s", strings.Count(text, "session/resume"), text)
+	}
+	for _, forbidden := range []string{"session/prompt", "session/set_config_option"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("method log unexpectedly contains %q:\n%s", forbidden, text)
+		}
+	}
+	key, err := sessionKey(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := second.modelRegistry.entries[key]
+	if entry.attachmentToken != tokenBefore || entry.attachmentID != idBefore || entry.control != controlBefore {
+		t.Fatalf("failed resume changed incumbent attachment: before token=%d id=%q control=%p; after=%#v", tokenBefore, idBefore, controlBefore, entry)
 	}
 }
 
