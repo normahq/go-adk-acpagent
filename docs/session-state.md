@@ -74,8 +74,19 @@ when those fields are not already present.
 
 ## Session Config Values
 
+For model selection, prefer `Config.DesiredModel`. It is a semantic preference:
+the adapter discovers the select option categorized as `Model` and uses its
+advertised option ID. A nil pointer leaves selection to the provider; a non-nil
+blank value is rejected before the ACP process starts. Before prompting, a
+nonempty preference is inspected and, when needed, applied once and verified.
+An unavailable or uncertain result prevents the prompt. The preference and its
+verification are Product-local and are not written to ADK session state;
+callers that need restart durability must reconstruct the Product with the
+desired value.
+
 `Config.SessionConfig` is applied through ACP `session/set_config_option`.
-Use it for ACP session-bound choices such as model, mode, or thought level:
+Use it for literal-ID ACP session-bound choices such as mode, thought level, or
+provider-specific controls:
 
 ```go
 agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
@@ -90,10 +101,12 @@ agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 
 Explicit `Config.SessionConfig` entries override persisted values with the same
 option ID. Persisted values are retained for IDs omitted from configuration.
-The adapter persists current values returned from ACP `session/new`,
+The adapter persists non-model current values returned from ACP `session/new`,
 `session/resume`, `session/set_config_option`, and
-`session/update.config_option`. Select values are stored as
-`{"id":"model","value":"..."}`; boolean values are stored as
+`session/update.config_option`. Model descriptors, observations, desired
+preferences, and verification state remain Product-local. Other select values
+are stored as
+`{"id":"mode","value":"..."}`; boolean values are stored as
 `{"id":"fast_mode","type":"boolean","value":true}`.
 
 ## Output State

@@ -48,6 +48,10 @@ type Config struct {
 	// after session/new or session/resume. Configured values take precedence
 	// over persisted values with the same option ID.
 	SessionConfig []SessionConfigValue
+	// DesiredModel is an optional semantic model preference. It is matched to
+	// the ACP option categorized as Model, never to a literal option ID. A
+	// non-nil blank value is invalid.
+	DesiredModel *string
 	// Instruction is the optional instruction applied to each invocation.
 	Instruction string
 	// GlobalInstruction is the optional global instruction applied before
@@ -140,6 +144,8 @@ type Agent struct {
 	promptSupport             promptSupport
 	ownerKey                  string
 	attachmentGeneration      string
+	desiredModel              string
+	modelRegistry             *modelRegistry
 }
 
 type promptRunResult struct {
@@ -151,6 +157,7 @@ type promptRunResult struct {
 	requestError       *acp.RequestError
 	consumerStopped    bool
 	control            *sessionControlState
+	controlUpdated     bool
 	releaseOperation   func()
 }
 
@@ -218,6 +225,13 @@ func NewWithContext(ctx context.Context, cfg Config) (*Agent, error) {
 }
 
 func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
+	desiredModel := ""
+	if cfg.DesiredModel != nil {
+		desiredModel = strings.TrimSpace(*cfg.DesiredModel)
+		if desiredModel == "" {
+			return nil, errors.New("desired model must not be blank")
+		}
+	}
 	if strings.TrimSpace(cfg.Name) == "" {
 		cfg.Name = defaultAgentName
 	}
@@ -273,6 +287,8 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 		globalInstructionProvider: cfg.GlobalInstructionProvider,
 		logger:                    l,
 		mcpServers:                mcpServers,
+		desiredModel:              desiredModel,
+		modelRegistry:             newModelRegistry(),
 	}
 	base, err := adkagent.New(adkagent.Config{
 		Name:                 cfg.Name,
@@ -298,6 +314,9 @@ func newAgent(ctx context.Context, cfg Config) (*Agent, error) {
 
 // Close shuts down the underlying ACP client process.
 func (a *Agent) Close() error {
+	if a.modelRegistry != nil {
+		a.modelRegistry.close()
+	}
 	a.cancelLifecycle()
 	a.initializationGate <- struct{}{}
 	defer func() { <-a.initializationGate }()
@@ -384,6 +403,12 @@ func (a *Agent) ensureInitialized(ctx context.Context) error {
 
 func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
+		admission, err := a.modelRegistry.acquire(ctx, ctx.Session())
+		if err != nil {
+			yield(nil, boundedModelAdmissionError(err))
+			return
+		}
+		defer admission.release()
 		yield = a.stampOwnership(ctx, yield)
 		if err := a.ensureInitialized(ctx); err != nil {
 			yield(nil, err)
@@ -400,7 +425,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		adkSessionID := ctx.Session().ID()
 		logCtx, logger := a.sessionLogger(ctx, baseLogger, adkSessionID)
 
-		remote, err := a.ensureRemoteSession(ctx, logCtx, logger, yield)
+		remote, err := a.ensureRemoteSessionHeld(ctx, logCtx, logger, yield, admission)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -422,6 +447,13 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		}
 
 		result, err := a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun, yield)
+		if result.controlUpdated {
+			if result.control != nil {
+				admission.observeCurrent(result.control)
+			} else {
+				admission.invalidateVerification()
+			}
+		}
 		remote.applyPromptControl(result.control)
 		if result.consumerStopped {
 			result.release()
@@ -429,7 +461,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		}
 		if err != nil && isACPSessionNotFoundError(err) {
 			result.release()
-			recovered, recoverErr := a.recoverRemoteSession(ctx, logCtx, logger, err, yield)
+			recovered, recoverErr := a.recoverRemoteSessionHeld(ctx, logCtx, logger, err, yield, admission)
 			if recoverErr != nil {
 				yield(nil, recoverErr)
 				return
@@ -451,6 +483,13 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 				}
 			}
 			result, err = a.runPromptOnce(ctx, logCtx, logger, remote.id, promptForRun, yield)
+			if result.controlUpdated {
+				if result.control != nil {
+					admission.observeCurrent(result.control)
+				} else {
+					admission.invalidateVerification()
+				}
+			}
 			remote.applyPromptControl(result.control)
 			if result.consumerStopped {
 				result.release()
@@ -540,13 +579,8 @@ func (a *Agent) runPromptOnce(ctx adkagent.InvocationContext, logCtx context.Con
 				continue
 			}
 			if update := ext.Update.ConfigOptionUpdate; update != nil {
-				control := newSessionControlState(update.ConfigOptions, a.attachmentGeneration)
-				if control != nil {
-					if state, ok := ev.Actions.StateDelta[SessionStateKey].(map[string]any); ok {
-						state[controlStateField] = control.toState()
-					}
-					out.control = control
-				}
+				out.control, _ = classifyModelDescriptor(update.ConfigOptions, a.attachmentGeneration)
+				out.controlUpdated = true
 			}
 			if ext.Update.AgentMessageChunk != nil {
 				finalText.WriteString(contentVisibleText(ev.Content))

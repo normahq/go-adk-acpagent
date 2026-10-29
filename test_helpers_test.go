@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,9 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	setConfigOptionError := os.Getenv("GO_SET_CONFIG_OPTION_ERROR")
 	setConfigOptionResponseModel := os.Getenv("GO_SET_CONFIG_OPTION_RESPONSE_MODEL")
 	emptySetConfigOptionResponse := os.Getenv("GO_EMPTY_SET_CONFIG_OPTION_RESPONSE") == "1"
+	failFirstSetConfigOption := os.Getenv("GO_FAIL_FIRST_SET_CONFIG_OPTION") == "1"
+	applyFirstSetThenError := os.Getenv("GO_APPLY_FIRST_SET_THEN_ERROR") == "1"
+	setConfigOptionCount := 0
 	disableSetMode := os.Getenv("GO_DISABLE_SET_MODE") == "1"
 	failResumeMethodNotFound := os.Getenv("GO_FAIL_RESUME_METHOD_NOT_FOUND") == "1"
 	failResumeEntityNotFound := os.Getenv("GO_FAIL_RESUME_ENTITY_NOT_FOUND") == "1"
@@ -123,6 +127,9 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	failLoadEntityNotFound := os.Getenv("GO_FAIL_LOAD_ENTITY_NOT_FOUND") == "1"
 	failAuthenticate := os.Getenv("GO_FAIL_AUTHENTICATE") == "1"
 	failFirstPromptEntityNotFound := os.Getenv("GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND") == "1"
+	failPromptEntityNotFoundAt, _ := strconv.Atoi(os.Getenv("GO_FAIL_PROMPT_ENTITY_NOT_FOUND_AT"))
+	failResumeEntityNotFoundAt, _ := strconv.Atoi(os.Getenv("GO_FAIL_RESUME_ENTITY_NOT_FOUND_AT"))
+	failSessionNewAt, _ := strconv.Atoi(os.Getenv("GO_FAIL_SESSION_NEW_AT"))
 	failIfResumeCalled := os.Getenv("GO_FAIL_IF_RESUME_CALLED") == "1"
 	failIfLoadCalled := os.Getenv("GO_FAIL_IF_LOAD_CALLED") == "1"
 	resumeCount := 0
@@ -305,6 +312,18 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			})
 			return
 		}
+		if method == acp.AgentMethodSessionResume && failResumeEntityNotFoundAt > 0 && resumeCount == failResumeEntityNotFoundAt {
+			writeEnvelope(stdout, helperEnvelope{
+				JSONRPC: "2.0",
+				ID:      msg.ID,
+				Error: &helperError{
+					Code:    -32602,
+					Message: "Invalid params",
+					Data:    "session not found",
+				},
+			})
+			return
+		}
 		writeEnvelope(stdout, helperEnvelope{
 			JSONRPC: "2.0",
 			ID:      msg.ID,
@@ -469,6 +488,10 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				}
 			}
 			sessionCount++
+			if failSessionNewAt > 0 && sessionCount == failSessionNewAt {
+				writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Error: &helperError{Code: -32000, Message: "session creation failed"}})
+				continue
+			}
 			sessionID := fmt.Sprintf("session-%d", sessionCount)
 			if forceNewSessionID != "" {
 				sessionID = forceNewSessionID
@@ -503,6 +526,18 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				failLoadEntityNotFound,
 			)
 		case acp.AgentMethodSessionSetConfigOption:
+			setConfigOptionCount++
+			if applyFirstSetThenError && setConfigOptionCount == 1 {
+				var req helperSetSessionConfigOptionRequest
+				must(json.Unmarshal(msg.Params, &req))
+				currentSessionModel = req.ValueString()
+				writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Error: &helperError{Code: -32000, Message: "response lost"}})
+				continue
+			}
+			if failFirstSetConfigOption && setConfigOptionCount == 1 {
+				writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Error: &helperError{Code: -32000, Message: "temporary failure"}})
+				continue
+			}
 			if setConfigOptionError != "" {
 				code := -32603
 				switch setConfigOptionError {
@@ -616,7 +651,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				})
 				continue
 			}
-			if failFirstPromptEntityNotFound && promptCount == 1 {
+			if failFirstPromptEntityNotFound && promptCount == 1 || failPromptEntityNotFoundAt > 0 && promptCount == failPromptEntityNotFoundAt {
 				writeEnvelope(stdout, helperEnvelope{
 					JSONRPC: "2.0",
 					ID:      msg.ID,
@@ -1039,22 +1074,44 @@ func helperSessionConfigOptions(model, configID, mode string, includeMode bool, 
 }
 
 func helperModelConfigOptions(model, configID string) []acp.SessionConfigOption {
-	if strings.TrimSpace(model) == "" {
+	if strings.TrimSpace(model) == "" || os.Getenv("GO_OMIT_MODEL_DESCRIPTOR") == "1" {
 		return nil
 	}
 	modelCategory := acp.SessionConfigOptionCategoryModel
+	choices := []acp.SessionConfigSelectOption{{Name: model, Value: acp.SessionConfigValueId(model)}}
+	for _, candidate := range strings.Split(os.Getenv("GO_SESSION_MODELS"), ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || candidate == model {
+			continue
+		}
+		choices = append(choices, acp.SessionConfigSelectOption{Name: candidate, Value: acp.SessionConfigValueId(candidate)})
+	}
 	option := acp.NewSessionConfigOptionSelect(
 		acp.SessionConfigValueId(model),
 		acp.SessionConfigSelectOptions{
-			Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
-				{Name: model, Value: acp.SessionConfigValueId(model)},
-			},
+			Ungrouped: (*acp.SessionConfigSelectOptionsUngrouped)(&choices),
 		},
 	)
 	option.Select.Id = acp.SessionConfigId(configID)
 	option.Select.Name = "Model"
 	option.Select.Category = &modelCategory
-	return []acp.SessionConfigOption{option}
+	if os.Getenv("GO_MALFORMED_MODEL_DESCRIPTOR") == "1" {
+		option.Select.CurrentValue = "not-advertised"
+	}
+	options := []acp.SessionConfigOption{option}
+	if os.Getenv("GO_DUPLICATE_MODEL_DESCRIPTOR") == "1" {
+		duplicate := option
+		selectCopy := *option.Select
+		selectCopy.Id = "second-model-option"
+		duplicate.Select = &selectCopy
+		options = append(options, duplicate)
+	}
+	if os.Getenv("GO_BOOLEAN_MODEL_DESCRIPTOR") == "1" {
+		options = append(options, acp.SessionConfigOption{Boolean: &acp.SessionConfigOptionBoolean{
+			Id: "boolean-model", Name: "Boolean model", Category: &modelCategory, CurrentValue: true, Type: "boolean",
+		}})
+	}
+	return options
 }
 
 func helperSessionModes(mode string) *acp.SessionModeState {

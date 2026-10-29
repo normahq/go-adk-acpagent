@@ -80,9 +80,8 @@ func TestAgentAppliesModelConfigOption(t *testing.T) {
 	if finalText != testSessionOneHello {
 		t.Fatalf("final text = %q, want %q", finalText, testSessionOneHello)
 	}
-	wantConfigValues := []map[string]any{{"id": "model", "value": "openai/gpt-5.4"}}
-	if diff := cmp.Diff(wantConfigValues, finalSessionState["config_values"]); diff != "" {
-		t.Errorf("final %s.config_values mismatch (-want +got):\n%s", SessionStateKey, diff)
+	if _, ok := finalSessionState["config_values"]; ok {
+		t.Errorf("model config leaked into durable %s state: %v", SessionStateKey, finalSessionState)
 	}
 }
 

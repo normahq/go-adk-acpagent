@@ -351,6 +351,7 @@ func mapACPConfigOptionUpdate(ctx context.Context, invocationID, sessionID strin
 		return nil, false
 	}
 	values := collectSessionConfigValues(update.ConfigOptions, nil)
+	values = withoutModelConfigOptions(values, update.ConfigOptions)
 	if len(values) == 0 {
 		return nil, false
 	}

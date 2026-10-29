@@ -164,14 +164,16 @@ func (a *Agent) ownedState(sess session.Session, state map[string]any) map[strin
 		currentID, _ := current["session_id"].(string)
 		if currentOwner != "" && currentOwner != owner && strings.TrimSpace(currentID) != "" {
 			slot := map[string]any{"session_id": currentID}
-			if values, ok := current["config_values"]; ok {
-				slot["config_values"] = values
+			if rawValues, ok := current["config_values"]; ok {
+				if values, err := parseSessionConfigValues(rawValues); err == nil {
+					values = withoutModelConfig(values, parseSessionControlState(current[controlStateField]))
+					if len(values) > 0 {
+						slot["config_values"] = sessionConfigValuesToState(values)
+					}
+				}
 			}
 			if indeterminate, _ := current["attachment_indeterminate"].(bool); indeterminate {
 				slot["attachment_indeterminate"] = true
-			}
-			if control, ok := current[controlStateField]; ok {
-				slot[controlStateField] = control
 			}
 			slot[parkedAtField] = parkNow().UTC().Format(time.RFC3339Nano)
 			parked[currentOwner] = slot
@@ -260,7 +262,9 @@ func (a *Agent) applyForeignOwnership(cfg acpSessionConfig, state map[string]any
 	cfg.sessionID = strings.TrimSpace(sessionID)
 	cfg.configValues = values
 	cfg.attachmentIndeterminate, _ = slot["attachment_indeterminate"].(bool)
-	cfg.control = parseSessionControlState(slot[controlStateField])
+	// Legacy persisted control snapshots are intentionally not transferred.
+	// Model observation and desired state are Product-local.
+	cfg.control = nil
 	return cfg, nil
 }
 
