@@ -608,6 +608,7 @@ func TestAgentStateDeltaHelpers(t *testing.T) {
 
 func TestSessionConfigUpdateMappers(t *testing.T) {
 	t.Parallel()
+	modelCategory := acp.SessionConfigOptionCategoryModel
 
 	if ev, ok := mapACPConfigOptionUpdate(t.Context(), "inv-1", "session-1", &acp.SessionConfigOptionUpdate{
 		ConfigOptions: []acp.SessionConfigOption{{
@@ -630,6 +631,24 @@ func TestSessionConfigUpdateMappers(t *testing.T) {
 		}
 		if diff := cmp.Diff(want, ev.Actions.StateDelta[SessionStateKey]); diff != "" {
 			t.Errorf("mapACPConfigOptionUpdate() state mismatch (-want +got):\n%s", diff)
+		}
+	}
+
+	if ev, ok := mapACPConfigOptionUpdate(t.Context(), "inv-model-category", "session-1", &acp.SessionConfigOptionUpdate{
+		ConfigOptions: []acp.SessionConfigOption{
+			{Select: &acp.SessionConfigOptionSelect{Id: "provider.model", CurrentValue: "secret-model", Category: &modelCategory}},
+			{Select: &acp.SessionConfigOptionSelect{Id: "provider.model.second", CurrentValue: "other-model", Category: &modelCategory}},
+			{Select: &acp.SessionConfigOptionSelect{Id: "mode", CurrentValue: "code"}},
+		},
+	}); !ok {
+		t.Fatal("mapACPConfigOptionUpdate(category Model) ok = false, want non-model projection")
+	} else {
+		want := map[string]any{
+			"session_id":    "session-1",
+			"config_values": []map[string]any{{"id": "mode", "value": "code"}},
+		}
+		if diff := cmp.Diff(want, ev.Actions.StateDelta[SessionStateKey]); diff != "" {
+			t.Errorf("category Model projection leaked (-want +got):\n%s", diff)
 		}
 	}
 
@@ -1166,6 +1185,10 @@ type testStateSession struct {
 	session.Session
 	state session.State
 }
+
+func (s testStateSession) ID() string      { return "test-session" }
+func (s testStateSession) AppName() string { return "test-app" }
+func (s testStateSession) UserID() string  { return "test-user" }
 
 func (s testStateSession) State() session.State {
 	return s.state

@@ -57,6 +57,11 @@ func TestSessionControllerValidatesAndChangesModel(t *testing.T) {
 	stored := runControlSession(t, a, svc, "control", "u")
 
 	control := a.SessionControl()
+	key, err := sessionKey(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenBefore := a.modelRegistry.entries[key].attachmentToken
 	snapshot := control.Inspect(t.Context(), stored)
 	if snapshot.Status != SessionControlAvailable || snapshot.CurrentModel != "model-a" {
 		t.Fatalf("Inspect() = %#v, want available model-a", snapshot)
@@ -79,12 +84,42 @@ func TestSessionControllerValidatesAndChangesModel(t *testing.T) {
 	if change.Outcome != ModelChangeApplied || change.EffectiveModel != "model-a" {
 		t.Fatalf("ChangeModel() = %#v, want applied model-a", change)
 	}
+	if tokenAfter := a.modelRegistry.entries[key].attachmentToken; tokenAfter != tokenBefore {
+		t.Fatalf("no-op ChangeModel changed attachment token: before=%d after=%d", tokenBefore, tokenAfter)
+	}
 	after, err := os.ReadFile(methodLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(after), "session/set_config_option") {
-		t.Fatalf("ChangeModel did not dispatch session/set_config_option; methods:\n%s", after)
+	if strings.Contains(string(after), "session/set_config_option") {
+		t.Fatalf("ChangeModel dispatched a redundant session/set_config_option; methods:\n%s", after)
+	}
+}
+
+func TestSessionControllerSuccessfulChangeKeepsAttachmentToken(t *testing.T) {
+	a, err := NewWithContext(t.Context(), Config{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_CURRENT_SESSION_MODEL": "model-a",
+			"GO_EXPECT_SESSION_MODEL":  "model-b",
+			"GO_SESSION_MODELS":        "model-b",
+		}),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestCloser(t, a)
+	stored := runControlSession(t, a, session.InMemoryService(), "stable-attachment", "u")
+	key, err := sessionKey(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenBefore := a.modelRegistry.entries[key].attachmentToken
+	if got := a.SessionControl().ChangeModel(t.Context(), stored, "model-b"); got.Outcome != ModelChangeApplied {
+		t.Fatalf("ChangeModel = %#v", got)
+	}
+	if tokenAfter := a.modelRegistry.entries[key].attachmentToken; tokenAfter != tokenBefore {
+		t.Fatalf("successful ChangeModel changed attachment token: before=%d after=%d", tokenBefore, tokenAfter)
 	}
 }
 
@@ -146,8 +181,9 @@ func TestSessionControllerRefreshesPersistedSnapshotAfterRestart(t *testing.T) {
 func TestSessionControllerReportsBusyAndPostDispatchAmbiguity(t *testing.T) {
 	a, err := NewWithContext(t.Context(), Config{
 		Command: helperCommandWithEnv(t, map[string]string{
-			"GO_CURRENT_SESSION_MODEL": "model-a",
+			"GO_CURRENT_SESSION_MODEL": "model-old",
 			"GO_EXPECT_SESSION_MODEL":  "model-a",
+			"GO_SESSION_MODELS":        "model-a",
 			"GO_HANG_METHOD":           "session/set_config_option",
 		}),
 		WorkingDir: t.TempDir(),
@@ -209,7 +245,7 @@ func TestSessionControlSnapshotGenerationAndBounds(t *testing.T) {
 	}
 }
 
-func TestParkedOwnerCarriesControlSnapshot(t *testing.T) {
+func TestParkedOwnerDropsLegacyControlSnapshot(t *testing.T) {
 	first := newOwnedTestAgent(t, "first-control", nil)
 	defer closeTestCloser(t, first)
 	second := newOwnedTestAgent(t, "second-control", nil)
@@ -232,8 +268,8 @@ func TestParkedOwnerCarriesControlSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.sessionID != "first-1" || !authoritativeControl(cfg.control, first.attachmentGeneration) {
-		t.Fatalf("restored cfg = %#v, want first session with authoritative control", cfg)
+	if cfg.sessionID != "first-1" || cfg.control != nil {
+		t.Fatalf("restored cfg = %#v, want identity without persisted control authority", cfg)
 	}
 }
 
@@ -421,7 +457,11 @@ func TestSessionControllerMutationErrorCertainty(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			env := map[string]string{"GO_CURRENT_SESSION_MODEL": "model-a", "GO_EXPECT_SESSION_MODEL": "model-a"}
+			env := map[string]string{
+				"GO_CURRENT_SESSION_MODEL": "model-old",
+				"GO_EXPECT_SESSION_MODEL":  "model-a",
+				"GO_SESSION_MODELS":        "model-a",
+			}
 			for key, value := range tc.env {
 				env[key] = value
 			}
@@ -441,16 +481,20 @@ func TestSessionControllerMutationErrorCertainty(t *testing.T) {
 
 func TestSessionControllerInspectRefreshOutcomes(t *testing.T) {
 	testCases := []struct {
-		name     string
-		env      map[string]string
-		cancel   bool
-		wantCode string
+		name           string
+		env            map[string]string
+		cancel         bool
+		wantCode       string
+		wantTokenDelta uint64
+		wantID         string
+		wantVerified   bool
 	}{
-		{name: "resume unsupported", env: map[string]string{"GO_FAIL_RESUME_METHOD_NOT_FOUND": "1"}, wantCode: "resume_unsupported"},
-		{name: "unknown session", env: map[string]string{"GO_FAIL_RESUME_ENTITY_NOT_FOUND": "1"}, wantCode: "unknown_session"},
-		{name: "resume failed", env: map[string]string{"GO_FAIL_METHOD": "session/resume"}, wantCode: "attachment_unavailable"},
-		{name: "model control absent", wantCode: "model_control_unavailable"},
-		{name: "canceled", cancel: true, wantCode: "canceled"},
+		{name: "resume unsupported", env: map[string]string{"GO_FAIL_RESUME_METHOD_NOT_FOUND": "1"}, wantCode: "resume_unsupported", wantID: "incumbent"},
+		{name: "unknown session", env: map[string]string{"GO_FAIL_RESUME_ENTITY_NOT_FOUND": "1"}, wantCode: "unknown_session", wantTokenDelta: 1},
+		{name: "resume failed", env: map[string]string{"GO_FAIL_METHOD": "session/resume"}, wantCode: "attachment_unavailable", wantID: "incumbent"},
+		{name: "resume success", wantTokenDelta: 1, wantID: "remote-1", wantVerified: true},
+		{name: "model control absent", wantCode: "descriptor_invalid", wantTokenDelta: 1, wantID: "remote-1"},
+		{name: "canceled", cancel: true, wantCode: "canceled", wantID: "incumbent"},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -479,6 +523,12 @@ func TestSessionControllerInspectRefreshOutcomes(t *testing.T) {
 				state[controlStateField] = oldControl.toState()
 			}
 			stored := newStateContext(t, map[string]any{SessionStateKey: state}).session
+			admission, err := a.modelRegistry.acquire(t.Context(), stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := admission.replaceAttachment("incumbent")
+			admission.release()
 			ctx := t.Context()
 			if tc.cancel {
 				var cancel context.CancelFunc
@@ -488,6 +538,91 @@ func TestSessionControllerInspectRefreshOutcomes(t *testing.T) {
 			got := a.SessionControl().Inspect(ctx, stored)
 			if got.Code != tc.wantCode {
 				t.Fatalf("Inspect() = %#v, want code %q", got, tc.wantCode)
+			}
+			key, err := sessionKey(stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := a.modelRegistry.entries[key]
+			if entry.attachmentToken != before+tc.wantTokenDelta {
+				t.Fatalf("attachment token = %d, want %d", entry.attachmentToken, before+tc.wantTokenDelta)
+			}
+			if entry.attachmentID != tc.wantID {
+				t.Fatalf("attachment ID = %q, want %q", entry.attachmentID, tc.wantID)
+			}
+			if (entry.control != nil) != tc.wantVerified {
+				t.Fatalf("verified control present = %t, want %t", entry.control != nil, tc.wantVerified)
+			}
+		})
+	}
+}
+
+func TestSessionControllerInvalidDescriptorsAreDefinitiveAndPure(t *testing.T) {
+	for name, flag := range map[string]string{
+		"missing":       "GO_OMIT_MODEL_DESCRIPTOR",
+		"duplicate":     "GO_DUPLICATE_MODEL_DESCRIPTOR",
+		"malformed":     "GO_MALFORMED_MODEL_DESCRIPTOR",
+		"boolean model": "GO_BOOLEAN_MODEL_DESCRIPTOR",
+	} {
+		t.Run(name, func(t *testing.T) {
+			workingDir := t.TempDir()
+			service := session.InMemoryService()
+			first, err := NewWithContext(t.Context(), Config{
+				Command: helperCommandWithEnv(t, map[string]string{
+					"GO_CURRENT_SESSION_MODEL": "model-a",
+					"GO_EXPECT_SESSION_MODEL":  "model-a",
+				}),
+				WorkingDir: workingDir, SessionOwner: "stable",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored := runControlSession(t, first, service, "invalid-control", "user")
+			closeTestCloser(t, first)
+			beforeRaw, err := stored.State().Get(SessionStateKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := cloneAnyMap(beforeRaw.(map[string]any))
+			methodLog := t.TempDir() + "/methods.log"
+			second, err := NewWithContext(t.Context(), Config{
+				Command: helperCommandWithEnv(t, map[string]string{
+					"GO_CURRENT_SESSION_MODEL":    "model-a",
+					"GO_EXPECT_SESSION_MODEL":     "model-a",
+					"GO_SUPPORT_SESSION_RESUME":   "1",
+					"GO_EXPECT_RESUME_SESSION_ID": "session-1",
+					"GO_METHOD_LOG":               methodLog,
+					flag:                          "1",
+				}),
+				WorkingDir: workingDir, SessionOwner: "stable",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeTestCloser(t, second)
+			control := second.SessionControl()
+			if got := control.Inspect(t.Context(), stored); got.Status != SessionControlFailed || got.Code != "descriptor_invalid" {
+				t.Fatalf("Inspect = %#v", got)
+			}
+			if got := control.ValidateModel(t.Context(), stored, "model-a"); got.Outcome != ModelValidationFailed || got.Code != "descriptor_invalid" {
+				t.Fatalf("ValidateModel = %#v", got)
+			}
+			if got := control.ChangeModel(t.Context(), stored, "model-a"); got.Outcome != ModelChangeFailed || got.Code != "descriptor_invalid" {
+				t.Fatalf("ChangeModel = %#v", got)
+			}
+			afterRaw, err := stored.State().Get(SessionStateKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(before, afterRaw); diff != "" {
+				t.Fatalf("control operation mutated ADK state (-before +after):\n%s", diff)
+			}
+			methods, err := os.ReadFile(methodLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(methods), "session/set_config_option") {
+				t.Fatalf("invalid descriptor dispatched mutation:\n%s", methods)
 			}
 		})
 	}
@@ -585,7 +720,7 @@ func TestSessionAdmissionDefensiveBranches(t *testing.T) {
 	remote.applyPromptControl(nil)
 	control := &sessionControlState{modelOptionID: "model", currentModel: "model-a"}
 	remote.applyPromptControl(control)
-	if remote.control != control || len(remote.configValues) != 1 || remote.configValues[0].Value != "model-a" {
+	if remote.control != control || len(remote.configValues) != 0 {
 		t.Fatalf("applyPromptControl() = %#v", remote)
 	}
 }
@@ -609,14 +744,14 @@ func TestBuildSetSessionConfigOptionRequestValidation(t *testing.T) {
 	}
 }
 
-func TestPromptRefreshesStaleControlAttachment(t *testing.T) {
+func TestPromptIgnoresLegacyControlProjectionWithoutDesiredModel(t *testing.T) {
 	testCases := []struct {
 		name        string
 		secondEnv   map[string]string
 		wantNewCall bool
 	}{
 		{name: "resume existing"},
-		{name: "replace unknown", secondEnv: map[string]string{"GO_FAIL_RESUME_ENTITY_NOT_FOUND": "1"}, wantNewCall: true},
+		{name: "ignore unknown legacy projection", secondEnv: map[string]string{"GO_FAIL_RESUME_ENTITY_NOT_FOUND": "1"}},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -663,8 +798,8 @@ func TestPromptRefreshesStaleControlAttachment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(methods), "session/resume") {
-				t.Fatalf("stale attachment was not resumed; methods:\n%s", methods)
+			if strings.Contains(string(methods), "session/resume") {
+				t.Fatalf("legacy control projection caused remote resume:\n%s", methods)
 			}
 			if gotNew := strings.Contains(string(methods), "session/new"); gotNew != tc.wantNewCall {
 				t.Fatalf("session/new called = %v, want %v; methods:\n%s", gotNew, tc.wantNewCall, methods)

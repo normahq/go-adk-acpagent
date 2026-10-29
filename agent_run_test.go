@@ -660,8 +660,8 @@ func TestAgentReconfiguresResumedSessionFromExplicitConfig(t *testing.T) {
 	if text != "saved-session:hello" {
 		t.Fatalf("final text = %q, want saved-session:hello", text)
 	}
-	if got := selectConfigValueFromState(t, state, "model"); got != "new-model" {
-		t.Fatalf("persisted model = %q, want new-model", got)
+	if _, ok := state["config_values"]; ok {
+		t.Fatalf("model control leaked into durable session state: %v", state)
 	}
 }
 
@@ -716,8 +716,8 @@ func TestAgentReportsResumedSessionConfigFailureAsFinalEvent(t *testing.T) {
 	if !ok {
 		t.Fatalf("final %s state type = %T", SessionStateKey, final.Actions.StateDelta[SessionStateKey])
 	}
-	if got := selectConfigValueFromState(t, rawState, "model"); got != "old-model" {
-		t.Fatalf("persisted model after failed update = %q, want old-model", got)
+	if _, ok := rawState["config_values"]; ok {
+		t.Fatalf("failed model update leaked into durable session state: %v", rawState)
 	}
 }
 
@@ -776,20 +776,6 @@ func newRunnerWithACPState(t *testing.T, a *Agent, workingDir string, acpState m
 		t.Fatalf("session.Create() error = %v", err)
 	}
 	return r, created.Session
-}
-
-func selectConfigValueFromState(t *testing.T, state map[string]any, id string) string {
-	t.Helper()
-	values, err := parseSessionConfigValues(state["config_values"])
-	if err != nil {
-		t.Fatalf("parse persisted config values: %v", err)
-	}
-	for _, value := range values {
-		if value.ID == id {
-			return value.Value
-		}
-	}
-	return ""
 }
 
 func TestAgentPersistsReplacementSessionIDAfterResumeFallback(t *testing.T) {

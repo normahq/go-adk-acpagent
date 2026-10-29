@@ -151,6 +151,7 @@ Runnable examples are available for [OpenCode](examples/opencode),
 | `Stderr` | ACP subprocess stderr forwarding. |
 | `PermissionHandler` | Application decision point for generic agent permission requests. |
 | `SessionConfig` | ACP session config values applied through `session/set_config_option`. |
+| `DesiredModel` | Optional semantic model preference, resolved from the ACP option categorized as `Model` before prompting. |
 | `MCPServers` | MCP servers forwarded to ACP sessions. |
 | `Instruction` / `GlobalInstruction` | ADK-style instructions prepended to prompts. |
 | `ReasoningEffort` | Provider reasoning effort metadata when supported. |
@@ -216,8 +217,8 @@ ownership contract.
   structural diagnostics such as content-block types, counts, and byte lengths.
   Provider stderr remains separately controlled by `Stderr`.
 - Keep ACP protocol messages on stdout and provider logs on stderr.
-- Use `SessionConfig` for session-bound model, mode, thought-level, or
-  provider-specific choices. Use `SelectSessionConfigValue` for select options
+- Use `DesiredModel` for semantic model selection. Use `SessionConfig` for
+  other session-bound mode, thought-level, or provider-specific choices. Use `SelectSessionConfigValue` for select options
   and `BooleanSessionConfigValue` for boolean options.
 - Treat `SessionStateKey` as adapter-owned except for documented `_meta`,
   `config_values`, and cwd overrides.

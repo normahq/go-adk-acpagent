@@ -65,9 +65,7 @@ func (r *remoteSession) applyPromptControl(control *sessionControlState) {
 		return
 	}
 	r.control = control
-	r.configValues = mergeSessionConfigValues(r.configValues, []SessionConfigValue{
-		SelectSessionConfigValue(control.modelOptionID, control.currentModel),
-	})
+	r.configValues = withoutModelConfig(r.configValues, control)
 }
 
 const (
@@ -122,10 +120,19 @@ func (a *Agent) persistSessionStateDelta(event *session.Event, remoteSessionID, 
 	if len(controls) > 0 {
 		control = controls[0]
 	}
-	event.Actions.StateDelta[SessionStateKey] = buildACPStateWithControl(remoteSessionID, metaJSON, configValues, control)
+	event.Actions.StateDelta[SessionStateKey] = buildACPStateWithConfigValues(remoteSessionID, metaJSON, withoutModelConfig(configValues, control))
 }
 
 func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, yield func(*session.Event, error) bool) (remoteSession, error) {
+	admission, err := a.modelRegistry.acquire(ctx, ctx.Session())
+	if err != nil {
+		return remoteSession{}, boundedModelAdmissionError(err)
+	}
+	defer admission.release()
+	return a.ensureRemoteSessionHeld(ctx, logCtx, logger, yield, admission)
+}
+
+func (a *Agent) ensureRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, yield func(*session.Event, error) bool, admission *modelAdmission) (remoteSession, error) {
 	cfg, err := a.resolveSessionConfig(ctx)
 	if err != nil {
 		return remoteSession{}, err
@@ -134,31 +141,19 @@ func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 	if cfg.attachmentIndeterminate {
 		return remoteSession{}, ErrSessionAttachmentIndeterminate
 	}
+	if cfg.sessionID == "" {
+		cfg.sessionID = admission.attachedRemoteID()
+	}
 	if cfg.sessionID != "" {
-		if cfg.control != nil && !authoritativeControl(cfg.control, a.attachmentGeneration) && a.client.SupportsSessionResume() {
-			// Refresh an existing persisted attachment before the first prompt in
-			// this process. Prompt success alone does not make old descriptors
-			// authoritative.
-			snapshot := a.SessionControl().Inspect(logCtx, ctx.Session())
-			if snapshot.Code == "unknown_session" {
-				cfg.sessionID = ""
-				cfg.configValues = nil
-				cfg.control = nil
-			} else {
-				cfg, err = a.resolveSessionConfig(ctx)
-				if err != nil {
-					return remoteSession{}, err
-				}
-			}
-		}
 		if cfg.sessionID != "" {
 			logger.Debug().
 				Str("acp_session_id", cfg.sessionID).
 				Msg("using acp session id from adk session state")
-			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues, cfg.control); err != nil {
+			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues, nil); err != nil {
 				return remoteSession{}, err
 			}
-			return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON, control: cfg.control}, nil
+			remote := remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}
+			return a.verifyExistingDesiredHeld(ctx, logCtx, logger, cfg, remote, admission)
 		}
 	}
 	instructions, err := a.resolveInstructionParts(ctx)
@@ -169,13 +164,67 @@ func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 	if err != nil {
 		return remoteSession{}, err
 	}
-	return a.createRemoteSession(ctx, logCtx, logger, cfg, instructions.combined(), yield)
+	return a.createRemoteSession(ctx, logCtx, logger, cfg, instructions.combined(), yield, admission)
+}
+
+func (a *Agent) verifyExistingDesiredHeld(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, cfg acpSessionConfig, remote remoteSession, admission *modelAdmission) (remoteSession, error) {
+	if admission.desired(a.desiredModel) == "" {
+		return remote, nil
+	}
+	if !a.client.SupportsSessionResume() {
+		return remoteSession{}, ErrDesiredModelUnavailable
+	}
+	active := &activePrompt{sessionID: acp.SessionId(cfg.sessionID), logger: logger}
+	if err := a.client.beginSessionOperation(active); err != nil {
+		return remoteSession{}, err
+	}
+	defer a.client.endSessionOperation(active)
+	setup, cancel := a.setupContext(logCtx)
+	defer cancel()
+	resp, err := a.client.ResumeSessionWithMeta(setup, cfg.sessionID, cfg.cwd, a.mcpServers, cfg.meta)
+	if err != nil {
+		if setup.Err() != nil {
+			admission.invalidateVerification()
+			return remoteSession{}, setup.Err()
+		}
+		if isACPResumeUnknownSessionError(err) {
+			admission.invalidateAttachment()
+		} else {
+			admission.invalidateVerification()
+		}
+		return remoteSession{}, ErrDesiredModelUnavailable
+	}
+	attachment := admission.replaceAttachment(cfg.sessionID)
+	control, err := a.applyDesiredModelCurrentHeld(setup, admission, cfg.sessionID, resp.ConfigOptions, attachment)
+	if err != nil {
+		return remoteSession{}, err
+	}
+	remote.control = control
+	remote.configValues = withoutModelConfigOptions(remote.configValues, resp.ConfigOptions)
+	if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, remote.configValues, control); err != nil {
+		return remoteSession{}, err
+	}
+	return remote, nil
 }
 
 func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, promptErr error, yield func(*session.Event, error) bool) (remoteSession, error) {
+	admission, err := a.modelRegistry.acquire(ctx, ctx.Session())
+	if err != nil {
+		return remoteSession{}, boundedModelAdmissionError(err)
+	}
+	defer admission.release()
+	return a.recoverRemoteSessionHeld(ctx, logCtx, logger, promptErr, yield, admission)
+}
+
+func (a *Agent) recoverRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, promptErr error, yield func(*session.Event, error) bool, admission *modelAdmission) (remoteSession, error) {
 	cfg, err := a.resolveSessionConfig(ctx)
 	if err != nil {
 		return remoteSession{}, err
+	}
+	attachmentInvalidated := false
+	if isACPSessionNotFoundError(promptErr) {
+		admission.invalidateAttachment()
+		attachmentInvalidated = true
 	}
 	if cfg.sessionID != "" && a.client.SupportsSessionResume() {
 		active := &activePrompt{sessionID: acp.SessionId(cfg.sessionID), logger: logger}
@@ -190,6 +239,7 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 			err = setup.Err()
 		}
 		if err == nil {
+			attachment := admission.replaceAttachment(cfg.sessionID)
 			configValues, finalOptions, configErr := a.client.applySessionConfigRequiredWithOptions(
 				setup,
 				cfg.sessionID,
@@ -199,9 +249,12 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 				cfg.desiredConfigValues,
 			)
 			if len(configValues) > 0 {
-				cfg.configValues = configValues
+				cfg.configValues = withoutModelConfigOptions(configValues, finalOptions)
 			}
-			control := newSessionControlState(finalOptions, a.attachmentGeneration)
+			control, modelErr := a.applyDesiredModelCurrentHeld(setup, admission, cfg.sessionID, finalOptions, attachment)
+			if modelErr != nil {
+				return remoteSession{}, modelErr
+			}
 			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues, control); err != nil {
 				return remoteSession{}, err
 			}
@@ -221,13 +274,17 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 				Err(err).
 				Str("acp_session_id", cfg.sessionID).
 				Msg("acp session already active after prompt failure")
-			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues, cfg.control); err != nil {
+			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues, nil); err != nil {
 				return remoteSession{}, err
 			}
-			return remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON, control: cfg.control}, nil
+			remote := remoteSession{id: cfg.sessionID, configValues: cfg.configValues, metaJSON: cfg.metaJSON}
+			return a.verifyExistingDesiredHeld(ctx, logCtx, logger, cfg, remote, admission)
 		}
 		if !isACPResumeUnknownSessionError(err) {
 			return remoteSession{}, fmt.Errorf("resume acp session %q after prompt failure: %w", cfg.sessionID, err)
+		}
+		if !attachmentInvalidated {
+			admission.invalidateAttachment()
 		}
 		// The fallback may reuse the same remote ID, so release the failed
 		// attachment admission before session/new.
@@ -245,14 +302,14 @@ func (a *Agent) recoverRemoteSession(ctx adkagent.InvocationContext, logCtx cont
 	if err != nil {
 		return remoteSession{}, err
 	}
-	recovered, err := a.createRemoteSession(ctx, logCtx, logger, cfg, instructions.combined(), yield)
+	recovered, err := a.createRemoteSession(ctx, logCtx, logger, cfg, instructions.combined(), yield, admission)
 	if err != nil {
 		return remoteSession{}, fmt.Errorf("recover acp session after prompt failure %q: %w", promptErr, err)
 	}
 	return recovered, nil
 }
 
-func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, cfg acpSessionConfig, firstPromptInstructions string, yield func(*session.Event, error) bool) (remoteSession, error) {
+func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, cfg acpSessionConfig, firstPromptInstructions string, yield func(*session.Event, error) bool, admission *modelAdmission) (remoteSession, error) {
 	setup, cancel := a.setupContext(logCtx)
 	defer cancel()
 	if err := setup.Err(); err != nil {
@@ -301,9 +358,12 @@ func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 		cfg.desiredConfigValues,
 	)
 	if len(configValues) > 0 {
-		cfg.configValues = configValues
+		cfg.configValues = withoutModelConfigOptions(configValues, finalOptions)
 	}
-	control := newSessionControlState(finalOptions, a.attachmentGeneration)
+	control, modelErr := a.applyDesiredModelHeld(setup, admission, sessionID, finalOptions)
+	if modelErr != nil {
+		return remoteSession{}, modelErr
+	}
 	if err := a.persistRemoteSessionBinding(ctx, sessionID, cfg.metaJSON, cfg.configValues, control); err != nil {
 		return remoteSession{}, err
 	}
@@ -362,6 +422,28 @@ func buildACPStateWithConfigValues(remoteSessionID, metaJSON string, configValue
 		acpState["meta"] = meta
 	}
 	return acpState
+}
+
+func withoutModelConfig(values []SessionConfigValue, control *sessionControlState) []SessionConfigValue {
+	ids := make(map[string]struct{})
+	if control != nil && control.modelOptionID != "" {
+		ids[control.modelOptionID] = struct{}{}
+	}
+	return withoutConfigIDs(values, ids)
+}
+
+func withoutModelConfigOptions(values []SessionConfigValue, options []acp.SessionConfigOption) []SessionConfigValue {
+	return withoutConfigIDs(values, modelConfigOptionIDs(options))
+}
+
+func withoutConfigIDs(values []SessionConfigValue, ids map[string]struct{}) []SessionConfigValue {
+	filtered := make([]SessionConfigValue, 0, len(values))
+	for _, value := range normalizeSessionConfigValues(values) {
+		if _, model := ids[value.ID]; !model {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
 }
 
 func normalizeSessionConfigValues(values []SessionConfigValue) []SessionConfigValue {
@@ -490,7 +572,7 @@ func (a *Agent) persistRemoteSessionBinding(ctx adkagent.InvocationContext, remo
 	if len(controls) > 0 {
 		control = controls[0]
 	}
-	acpState := a.ownedState(ctx.Session(), buildACPStateWithControl(remoteSessionID, metaJSON, configValues, control))
+	acpState := a.ownedState(ctx.Session(), buildACPStateWithConfigValues(remoteSessionID, metaJSON, withoutModelConfig(configValues, control)))
 	if currentACPStateMatches(ctx.Session(), remoteSessionID, metaJSON) {
 		if err := ctx.Session().State().Set(SessionStateKey, cloneAnyMap(acpState)); err != nil {
 			return fmt.Errorf("set live acp session state: %w", err)
@@ -663,7 +745,7 @@ func normalizeACPConfigCWD(cfg acpSessionConfig) (acpSessionConfig, error) {
 }
 
 func (a *Agent) persistAttachmentOutcome(ctx adkagent.InvocationContext, cfg acpSessionConfig, pending bool, yield func(*session.Event, error) bool) error {
-	state := a.ownedState(ctx.Session(), buildACPStateWithConfigValues(cfg.sessionID, cfg.metaJSON, cfg.configValues))
+	state := a.ownedState(ctx.Session(), buildACPStateWithConfigValues(cfg.sessionID, cfg.metaJSON, withoutModelConfig(cfg.configValues, cfg.control)))
 	if pending {
 		state["attachment_indeterminate"] = true
 	}

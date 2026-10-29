@@ -86,9 +86,16 @@ content and do not require capability flags.
 
 ## Session Configuration
 
+`Config.DesiredModel` is the provider-neutral model preference. The adapter
+resolves the ACP select option categorized as `Model`, inspects it before a
+prompt, and applies at most one change followed by authoritative verification.
+It never guesses a literal option ID. This preference is process-local; create
+a replacement Product with the same value to preserve it across restarts.
+
 `Config.SessionConfig` is applied with ACP `session/set_config_option`. ACP
 session config options are session-bound and can represent model, mode, thought
-level, or provider-specific controls. Select options use
+level, or provider-specific controls. Prefer `DesiredModel` for model selection;
+literal model entries remain compatible but are not durable authority. Select options use
 `SessionConfigValue{ID: "...", Value: "..."}`; boolean options use
 `BooleanSessionConfigValue("...", true)`.
 

@@ -141,6 +141,16 @@ func (c *SessionController) Inspect(ctx context.Context, sess session.Session) S
 	if a == nil || sess == nil || ctx == nil {
 		return unavailableControl(SessionControlFailed, "invalid_session")
 	}
+	admission, err := a.modelRegistry.acquire(ctx, sess)
+	if err != nil {
+		return controlSnapshotForModelAdmissionError(err)
+	}
+	defer admission.release()
+	return c.inspectHeld(ctx, sess, admission)
+}
+
+func (c *SessionController) inspectHeld(ctx context.Context, sess session.Session, admission *modelAdmission) SessionControlSnapshot {
+	a := c.agent
 	if err := a.ensureInitialized(ctx); err != nil {
 		if ctx.Err() != nil {
 			return unavailableControl(SessionControlFailed, "canceled")
@@ -154,8 +164,11 @@ func (c *SessionController) Inspect(ctx context.Context, sess session.Session) S
 	if err != nil {
 		return unavailableControl(SessionControlFailed, "invalid_state")
 	}
-	if authoritativeControl(cfg.control, a.attachmentGeneration) {
-		return cfg.control.snapshot(SessionControlAvailable, "")
+	if cfg.sessionID == "" {
+		cfg.sessionID = admission.attachedRemoteID()
+	}
+	if control := admission.observed(); control != nil {
+		return control.snapshot(SessionControlAvailable, "")
 	}
 	if cfg.sessionID == "" || !a.client.SupportsSessionResume() {
 		return unavailableControl(SessionControlUnavailable, "attachment_unavailable")
@@ -171,27 +184,30 @@ func (c *SessionController) Inspect(ctx context.Context, sess session.Session) S
 	defer cancel()
 	resp, err := a.client.ResumeSessionWithMeta(setup, cfg.sessionID, cfg.cwd, a.mcpServers, cfg.meta)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		admission.invalidateVerification()
+		if setup.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return unavailableControl(SessionControlFailed, "canceled")
 		}
 		if isACPMethodNotFoundError(err) {
 			return unavailableControl(SessionControlUnavailable, "resume_unsupported")
 		}
 		if isACPResumeUnknownSessionError(err) {
+			admission.invalidateAttachment()
 			return unavailableControl(SessionControlUnavailable, "unknown_session")
 		}
 		return unavailableControl(SessionControlUnavailable, "attachment_unavailable")
 	}
+	attachment := admission.replaceAttachment(cfg.sessionID)
 	configValues := collectSessionConfigValues(resp.ConfigOptions, resp.Modes)
 	if len(configValues) > 0 {
-		cfg.configValues = configValues
+		cfg.configValues = withoutModelConfigOptions(configValues, resp.ConfigOptions)
 	}
-	control := newSessionControlState(resp.ConfigOptions, a.attachmentGeneration)
-	if control == nil {
-		return unavailableControl(SessionControlUnavailable, "model_control_unavailable")
+	control, valid := classifyModelDescriptor(resp.ConfigOptions, a.attachmentGeneration)
+	if !valid {
+		return unavailableControl(SessionControlFailed, "descriptor_invalid")
 	}
-	if err := a.persistControlState(sess, cfg, control); err != nil {
-		return unavailableControl(SessionControlFailed, "state_write_failed")
+	if !admission.confirmCurrentAttachment(control, attachment) {
+		return unavailableControl(SessionControlFailed, "attachment_unavailable")
 	}
 	return control.snapshot(SessionControlAvailable, "")
 }
@@ -199,7 +215,20 @@ func (c *SessionController) Inspect(ctx context.Context, sess session.Session) S
 // ValidateModel validates a model against the authoritative exact-session
 // snapshot without applying it.
 func (c *SessionController) ValidateModel(ctx context.Context, sess session.Session, model string) ModelValidation {
-	snapshot := c.Inspect(ctx, sess)
+	a := c.agent
+	if a == nil || sess == nil || ctx == nil {
+		return ModelValidation{Outcome: ModelValidationFailed, Code: "invalid_session"}
+	}
+	admission, err := a.modelRegistry.acquire(ctx, sess)
+	if err != nil {
+		return modelValidationForAdmissionError(err)
+	}
+	defer admission.release()
+	return c.validateHeld(ctx, sess, model, admission)
+}
+
+func (c *SessionController) validateHeld(ctx context.Context, sess session.Session, model string, admission *modelAdmission) ModelValidation {
+	snapshot := c.inspectHeld(ctx, sess, admission)
 	switch snapshot.Status {
 	case SessionControlAvailable:
 		model = strings.TrimSpace(model)
@@ -223,15 +252,27 @@ func (c *SessionController) ValidateModel(ctx context.Context, sess session.Sess
 // ChangeModel applies a model to the exact ACP session. Any non-authoritative
 // error after dispatch is reported as ambiguous.
 func (c *SessionController) ChangeModel(ctx context.Context, sess session.Session, model string) ModelChange {
-	validation := c.ValidateModel(ctx, sess, model)
+	a := c.agent
+	if a == nil || sess == nil || ctx == nil {
+		return ModelChange{Outcome: ModelChangeFailed, Code: "invalid_session"}
+	}
+	admission, err := a.modelRegistry.acquire(ctx, sess)
+	if err != nil {
+		return modelChangeForModelAdmissionError(err)
+	}
+	defer admission.release()
+	validation := c.validateHeld(ctx, sess, model, admission)
 	if validation.Outcome != ModelValidationSupported {
 		return modelChangeFromValidation(validation)
 	}
 
-	a := c.agent
 	cfg, err := a.resolveSessionConfigForSession(sess)
 	if err != nil {
+		admission.invalidateVerification()
 		return ModelChange{Outcome: ModelChangeFailed, Code: "invalid_state"}
+	}
+	if cfg.sessionID == "" {
+		cfg.sessionID = admission.attachedRemoteID()
 	}
 	active := &activePrompt{sessionID: acp.SessionId(cfg.sessionID), logger: a.logger.withContext(ctx)}
 	if err := a.client.beginSessionOperation(active); err != nil {
@@ -242,12 +283,23 @@ func (c *SessionController) ChangeModel(ctx context.Context, sess session.Sessio
 	// Re-read after admission so validation cannot race a prompt update or
 	// another mutation.
 	cfg, err = a.resolveSessionConfigForSession(sess)
-	if err != nil || !authoritativeControl(cfg.control, a.attachmentGeneration) {
+	if cfg.sessionID == "" {
+		cfg.sessionID = admission.attachedRemoteID()
+	}
+	control := admission.observed()
+	if err != nil || control == nil {
 		return ModelChange{Outcome: ModelChangeFailed, Code: "stale_snapshot"}
 	}
 	model = strings.TrimSpace(model)
-	if !cfg.control.hasModel(model) {
+	if !control.hasModel(model) {
 		return ModelChange{Outcome: ModelChangeIncompatible, Code: "unknown_model"}
+	}
+	if control.currentModel == model {
+		attachment := admission.currentAttachmentToken()
+		if !admission.confirmCurrentAttachment(control, attachment) || !admission.confirm(model, a.desiredModel, attachment) {
+			return ModelChange{Outcome: ModelChangeFailed, Code: "stale_snapshot"}
+		}
+		return ModelChange{Outcome: ModelChangeApplied, EffectiveModel: model, Snapshot: control.snapshot(SessionControlAvailable, "")}
 	}
 	if err := ctx.Err(); err != nil {
 		return ModelChange{Outcome: ModelChangeFailed, Code: "canceled"}
@@ -256,11 +308,12 @@ func (c *SessionController) ChangeModel(ctx context.Context, sess session.Sessio
 	resp, err := a.client.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
 		ValueId: &acp.SetSessionConfigOptionValueId{
 			SessionId: acp.SessionId(cfg.sessionID),
-			ConfigId:  acp.SessionConfigId(cfg.control.modelOptionID),
+			ConfigId:  acp.SessionConfigId(control.modelOptionID),
 			Value:     acp.SessionConfigValueId(model),
 		},
 	})
 	if err != nil {
+		admission.invalidateVerification()
 		if ctx.Err() != nil {
 			return ModelChange{Outcome: ModelChangeAmbiguous, Code: "response_uncertain"}
 		}
@@ -281,47 +334,82 @@ func (c *SessionController) ChangeModel(ctx context.Context, sess session.Sessio
 		return ModelChange{Outcome: ModelChangeAmbiguous, Code: "response_uncertain"}
 	}
 
-	control := newSessionControlState(resp.ConfigOptions, a.attachmentGeneration)
+	control = newSessionControlState(resp.ConfigOptions, a.attachmentGeneration)
 	if control == nil {
+		admission.invalidateVerification()
 		return ModelChange{Outcome: ModelChangeAmbiguous, Code: "invalid_response"}
 	}
 	cfg.configValues = mergeSessionConfigValues(cfg.configValues, []SessionConfigValue{SelectSessionConfigValue(control.modelOptionID, control.currentModel)})
-	if err := a.persistControlState(sess, cfg, control); err != nil {
-		return ModelChange{Outcome: ModelChangeAmbiguous, Code: "state_write_failed"}
-	}
 	snapshot := control.snapshot(SessionControlAvailable, "")
 	if control.currentModel != model {
+		admission.invalidateVerification()
 		return ModelChange{Outcome: ModelChangeRejected, EffectiveModel: control.currentModel, Snapshot: snapshot, Code: "not_applied"}
+	}
+	attachment := admission.currentAttachmentToken()
+	if !admission.confirmCurrentAttachment(control, attachment) || !admission.confirm(model, a.desiredModel, attachment) {
+		return ModelChange{Outcome: ModelChangeFailed, Code: "stale_snapshot"}
 	}
 	return ModelChange{Outcome: ModelChangeApplied, EffectiveModel: model, Snapshot: snapshot}
 }
 
-func (a *Agent) persistControlState(sess session.Session, cfg acpSessionConfig, control *sessionControlState) error {
-	state := buildACPStateWithControl(cfg.sessionID, cfg.metaJSON, cfg.configValues, control)
-	state = a.ownedState(sess, state)
-	if err := sess.State().Set(SessionStateKey, state); err != nil {
-		return err
+func controlSnapshotForModelAdmissionError(err error) SessionControlSnapshot {
+	switch {
+	case errors.Is(err, ErrSessionBusy), errors.Is(err, ErrModelRegistryFull):
+		return unavailableControl(SessionControlBusy, "busy")
+	case errors.Is(err, ErrClientClosed):
+		return unavailableControl(SessionControlClosed, "closed")
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return unavailableControl(SessionControlFailed, "canceled")
+	default:
+		return unavailableControl(SessionControlFailed, "invalid_session")
 	}
-	return nil
+}
+
+func modelValidationForAdmissionError(err error) ModelValidation {
+	snapshot := controlSnapshotForModelAdmissionError(err)
+	switch snapshot.Status {
+	case SessionControlBusy:
+		return ModelValidation{Outcome: ModelValidationBusy, Snapshot: snapshot, Code: snapshot.Code}
+	case SessionControlClosed:
+		return ModelValidation{Outcome: ModelValidationClosed, Snapshot: snapshot, Code: snapshot.Code}
+	default:
+		return ModelValidation{Outcome: ModelValidationFailed, Snapshot: snapshot, Code: snapshot.Code}
+	}
+}
+
+func modelChangeForModelAdmissionError(err error) ModelChange {
+	validation := modelValidationForAdmissionError(err)
+	return modelChangeFromValidation(validation)
 }
 
 func newSessionControlState(options []acp.SessionConfigOption, generation string) *sessionControlState {
-	var selected *acp.SessionConfigOptionSelect
-	for _, option := range options {
-		if option.Select == nil || option.Select.Category == nil || *option.Select.Category != acp.SessionConfigOptionCategoryModel {
-			continue
-		}
-		if selected != nil {
-			return nil
-		}
-		selected = option.Select
-	}
-	if selected == nil || !boundedControlString(string(selected.Id)) || !boundedControlString(string(selected.CurrentValue)) {
+	control, valid := classifyModelDescriptor(options, generation)
+	if !valid {
 		return nil
+	}
+	return control
+}
+
+func classifyModelDescriptor(options []acp.SessionConfigOption, generation string) (*sessionControlState, bool) {
+	var selected *acp.SessionConfigOptionSelect
+	modelCount := 0
+	for _, option := range options {
+		if option.Select != nil && option.Select.Category != nil && *option.Select.Category == acp.SessionConfigOptionCategoryModel {
+			modelCount++
+			if selected == nil {
+				selected = option.Select
+			}
+		}
+		if option.Boolean != nil && option.Boolean.Category != nil && *option.Boolean.Category == acp.SessionConfigOptionCategoryModel {
+			modelCount++
+		}
+	}
+	if modelCount != 1 || selected == nil || !boundedControlString(string(selected.Id)) || !boundedControlString(string(selected.CurrentValue)) {
+		return nil, false
 	}
 	models := flattenSessionModels(selected.Options)
 	if len(models) == 0 || len(models) > maxControlModels {
-		return nil
+		return nil, false
 	}
 	current := strings.TrimSpace(string(selected.CurrentValue))
 	state := &sessionControlState{
@@ -331,10 +419,27 @@ func newSessionControlState(options []acp.SessionConfigOption, generation string
 		models:        models,
 	}
 	if !state.hasModel(current) {
-		return nil
+		return nil, false
 	}
 	state.revision = controlRevision(state)
-	return state
+	return state, true
+}
+
+func modelConfigOptionIDs(options []acp.SessionConfigOption) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, option := range options {
+		if option.Select != nil && option.Select.Category != nil && *option.Select.Category == acp.SessionConfigOptionCategoryModel {
+			if id := strings.TrimSpace(string(option.Select.Id)); id != "" {
+				ids[id] = struct{}{}
+			}
+		}
+		if option.Boolean != nil && option.Boolean.Category != nil && *option.Boolean.Category == acp.SessionConfigOptionCategoryModel {
+			if id := strings.TrimSpace(string(option.Boolean.Id)); id != "" {
+				ids[id] = struct{}{}
+			}
+		}
+	}
+	return ids
 }
 
 func flattenSessionModels(options acp.SessionConfigSelectOptions) []SessionModel {
@@ -453,14 +558,6 @@ func modelChangeFromValidation(validation ModelValidation) ModelChange {
 		change.Outcome = ModelChangeFailed
 	}
 	return change
-}
-
-func buildACPStateWithControl(remoteSessionID, metaJSON string, configValues []SessionConfigValue, control *sessionControlState) map[string]any {
-	state := buildACPStateWithConfigValues(remoteSessionID, metaJSON, configValues)
-	if control != nil {
-		state[controlStateField] = control.toState()
-	}
-	return state
 }
 
 func (s *sessionControlState) toState() map[string]any {
