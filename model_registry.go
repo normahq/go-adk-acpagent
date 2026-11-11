@@ -225,6 +225,15 @@ func (a *modelAdmission) observed() *sessionControlState {
 	return a.entry.control
 }
 
+func (a *modelAdmission) observedForAttachment(remoteID string) *sessionControlState {
+	a.registry.mu.Lock()
+	defer a.registry.mu.Unlock()
+	if remoteID == "" || remoteID != a.entry.attachmentID || a.entry.controlToken != a.entry.attachmentToken || a.entry.control == nil {
+		return nil
+	}
+	return a.entry.control
+}
+
 func (a *modelAdmission) confirm(model, construction string, attachment uint64) bool {
 	a.registry.mu.Lock()
 	defer a.registry.mu.Unlock()
