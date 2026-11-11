@@ -427,17 +427,25 @@ func TestLazyDefinitiveAttachmentFailureCanRetry(t *testing.T) {
 }
 
 func TestLazyInvocationReportsLaunchFailure(t *testing.T) {
-	a, err := NewWithContext(t.Context(), Config{Command: []string{"/does/not/exist"}, LazyInitialization: true})
+	a, err := NewWithContext(t.Context(), Config{Command: []string{"/does/not/exist"}, WorkingDir: t.TempDir(), LazyInitialization: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTestCloser(t, a)
+	svc := session.InMemoryService()
+	created, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "launch-failure", UserID: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var runErr error
-	for _, err := range a.run(testInvocationContext{Context: t.Context()}) {
+	for event, err := range a.run(testInvocationContext{Context: t.Context(), session: created.Session}) {
+		if event != nil && event.TurnComplete {
+			t.Fatal("launch failure published a handled final")
+		}
 		runErr = err
 	}
-	if runErr == nil {
-		t.Fatal("invocation hid process launch failure")
+	if !errors.Is(runErr, os.ErrNotExist) {
+		t.Fatalf("invocation error=%v, want process launch failure", runErr)
 	}
 }
 

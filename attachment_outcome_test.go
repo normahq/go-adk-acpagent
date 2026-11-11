@@ -76,6 +76,48 @@ func TestAttachmentDiagnosticsAreStructural(t *testing.T) {
 	}
 }
 
+func TestAttachmentDiagnosticsAfterSetupEnds(t *testing.T) {
+	for _, expired := range []bool{true, false} {
+		name := "canceled"
+		if expired {
+			name = "expired"
+		}
+		t.Run(name, func(t *testing.T) {
+			privateCause := errors.New("synthetic private setup cause")
+			var setup context.Context
+			wantCause := "setup_canceled"
+			wantBudget := float64(-1)
+			if expired {
+				var cancel context.CancelFunc
+				setup, cancel = context.WithDeadlineCause(t.Context(), time.Now().Add(-time.Second), privateCause)
+				defer cancel()
+				wantCause = "setup_deadline"
+				wantBudget = 0
+			} else {
+				var cancel context.CancelCauseFunc
+				setup, cancel = context.WithCancelCause(t.Context())
+				cancel(privateCause)
+			}
+			var logs testLogBuffer
+			a := &Agent{lifecycle: t.Context()}
+			a.logSetupPhase(setup, t.Context(), newLogger(testSlogLogger(&logs, slog.LevelDebug), ""), "session_new", "session/new", "attempted_unknown", time.Now(), time.Second, context.Cause(setup))
+			var record map[string]any
+			if err := json.Unmarshal([]byte(logs.String()), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record["cause_class"] != wantCause || record["effective_budget_ms"] != wantBudget || record["outcome"] != "attempted_unknown" {
+				t.Fatalf("ended setup diagnostics=%v", record)
+			}
+			if elapsed, ok := record["elapsed_ms"].(float64); !ok || elapsed < 0 {
+				t.Fatalf("invalid elapsed time: %v", record)
+			}
+			if strings.Contains(logs.String(), privateCause.Error()) {
+				t.Fatal("setup diagnostics disclosed private context cause")
+			}
+		})
+	}
+}
+
 func TestAttachmentCancellationKeepsContextAndFence(t *testing.T) {
 	for _, mode := range []string{"caller cancel", "caller deadline", "lifecycle", "shutdown"} {
 		t.Run(mode, func(t *testing.T) {
