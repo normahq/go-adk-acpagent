@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/normahq/go-adk-acpagent/v2/acperror"
 	adkagent "google.golang.org/adk/v2/agent"
 	runnerpkg "google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
@@ -232,5 +233,123 @@ func TestPreEndedInvocationDoesNotCreateAmbiguity(t *testing.T) {
 				t.Fatalf("pre-ended state=%+v,%v", cfg, err)
 			}
 		})
+	}
+}
+
+func TestAttachmentConfigFailureDoesNotInitialize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "methods")
+	a, err := NewWithContext(t.Context(), Config{Command: helperCommandWithEnv(t, map[string]string{"GO_METHOD_LOG": path}), WorkingDir: t.TempDir(), LazyInitialization: true, SetupTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestCloser(t, a)
+	svc := session.InMemoryService()
+	created, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "config", UserID: "u", State: map[string]any{SessionStateKey: "invalid configuration"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := runnerpkg.New(runnerpkg.Config{AppName: "config", Agent: a, SessionService: svc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runErr error
+	for event, err := range r.Run(t.Context(), "u", created.Session.ID(), genai.NewContentFromText("hello", genai.RoleUser), adkagent.RunConfig{}) {
+		if err != nil {
+			runErr = err
+		}
+		if event != nil && event.TurnComplete {
+			t.Fatal("invalid local config became a handled attachment outcome")
+		}
+	}
+	if runErr == nil {
+		t.Fatal("invalid local session config accepted")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid config initialized a process: %v", err)
+	}
+}
+
+func TestMissingSessionRecoveryKeepsIndeterminateFence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "methods")
+	a, err := NewWithContext(t.Context(), Config{Command: helperCommandWithEnv(t, map[string]string{"GO_METHOD_LOG": path, "GO_FAIL_FIRST_PROMPT_ENTITY_NOT_FOUND": "1", "GO_HANG_SESSION_NEW_AT": "2"}), WorkingDir: t.TempDir(), LazyInitialization: true, SetupTimeout: 100 * time.Millisecond, InitializeTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestCloser(t, a)
+	svc := session.InMemoryService()
+	created, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "recovery", UserID: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := runnerpkg.New(runnerpkg.Config{AppName: "recovery", Agent: a, SessionService: svc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		finals := 0
+		for event, err := range r.Run(t.Context(), "u", created.Session.ID(), genai.NewContentFromText("hello", genai.RoleUser), adkagent.RunConfig{}) {
+			if err != nil {
+				t.Fatalf("uncertain recovery returned iterator error: %v", err)
+			}
+			if event.TurnComplete {
+				finals++
+				typed, ok := acperror.FromADKMetadata(event.CustomMetadata)
+				if event.ErrorCode != attachmentIndeterminateCode || event.Content != nil || !ok || typed.Scope != acperror.ScopeSession {
+					t.Fatal("recovery did not return the fixed session-scoped failure")
+				}
+			}
+		}
+		if finals != 1 {
+			t.Fatalf("recovery failed finals=%d", finals)
+		}
+	}
+	stored, err := svc.Get(t.Context(), &session.GetRequest{AppName: "recovery", UserID: "u", SessionID: created.Session.ID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testInvocationContext{Context: t.Context(), session: stored.Session}
+	cfg, err := a.resolveSessionConfig(ctx)
+	if err != nil || !cfg.attachmentIndeterminate || cfg.sessionID != "session-1" {
+		t.Fatalf("recovery lost known predecessor/fence: %+v,%v", cfg, err)
+	}
+	if _, err := a.recoverRemoteSession(ctx, ctx, newLogger(nil, ""), errors.New("session not found"), nil); !errors.Is(err, ErrSessionAttachmentIndeterminate) {
+		t.Fatalf("lower recovery bypassed fence: %v", err)
+	}
+	methods, err := os.ReadFile(path)
+	if err != nil || strings.Count(string(methods), "session/new\n") != 2 || strings.Count(string(methods), "session/prompt\n") != 1 || strings.Contains(string(methods), "session/resume\n") {
+		t.Fatalf("recovery replayed remote work: %q,%v", methods, err)
+	}
+}
+
+func TestPendingIntentCancellationPreventsNewCall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "methods")
+	a, err := NewWithContext(t.Context(), Config{Command: helperCommandWithEnv(t, map[string]string{"GO_METHOD_LOG": path}), WorkingDir: t.TempDir(), LazyInitialization: true, SetupTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestCloser(t, a)
+	if err := a.ensureInitialized(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	svc := session.InMemoryService()
+	created, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "pending", UserID: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, cancel := context.WithCancelCause(t.Context())
+	privateCause := errors.New("private cancellation while persisting pending intent")
+	defer cancel(privateCause)
+	ctx := testInvocationContext{Context: caller, session: created.Session}
+	_, err = a.ensureRemoteSession(ctx, ctx, newLogger(nil, ""), func(*session.Event, error) bool { cancel(privateCause); return true })
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, privateCause) || errors.Is(err, ErrSessionAttachmentIndeterminate) {
+		t.Fatalf("pre-call cancellation lost provenance: %v", err)
+	}
+	cfg, err := a.resolveSessionConfig(testInvocationContext{Context: t.Context(), session: created.Session})
+	if err != nil || !cfg.attachmentIndeterminate || cfg.sessionID != "" {
+		t.Fatal("recorded pending intent was erased")
+	}
+	methods, err := os.ReadFile(path)
+	if err != nil || strings.Contains(string(methods), "session/new\n") {
+		t.Fatalf("pre-call cancellation dispatched new: %q,%v", methods, err)
 	}
 }

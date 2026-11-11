@@ -300,10 +300,10 @@ func TestLazyIndeterminateAttachmentSurvivesRunnerReload(t *testing.T) {
 			if strings.Count(string(data), "initialize\n") != 1 || strings.Count(string(data), "session/new\n") != 1 || strings.Contains(string(data), "session/prompt\n") || strings.Contains(string(data), "session/resume\n") {
 				t.Fatalf("duplicate attachment: %s", data)
 			}
-
 		})
 	}
 }
+
 func TestLazyKnownIDSurvivesConfigurationTimeout(t *testing.T) {
 	a, err := NewWithContext(t.Context(), Config{Command: helperCommandWithEnv(t, map[string]string{"GO_HANG_METHOD": "session/set_config_option", "GO_CURRENT_SESSION_MODEL": "old", "GO_EXPECT_SESSION_MODEL": "new"}), WorkingDir: t.TempDir(), LazyInitialization: true, SetupTimeout: 5 * time.Second, SessionConfig: []SessionConfigValue{SelectSessionConfigValue("model", "new")}})
 	if err != nil {
@@ -473,5 +473,4 @@ func TestLazyAttachmentRequiresRecordedPendingState(t *testing.T) {
 	if err != nil || !cfg.attachmentIndeterminate {
 		t.Fatal("stopped consumer erased already-recorded pending intent")
 	}
-
 }
