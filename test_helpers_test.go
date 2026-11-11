@@ -130,6 +130,7 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 	failPromptEntityNotFoundAt, _ := strconv.Atoi(os.Getenv("GO_FAIL_PROMPT_ENTITY_NOT_FOUND_AT"))
 	failResumeEntityNotFoundAt, _ := strconv.Atoi(os.Getenv("GO_FAIL_RESUME_ENTITY_NOT_FOUND_AT"))
 	failSessionNewAt, _ := strconv.Atoi(os.Getenv("GO_FAIL_SESSION_NEW_AT"))
+	hangSessionNewAt, _ := strconv.Atoi(os.Getenv("GO_HANG_SESSION_NEW_AT"))
 	failIfResumeCalled := os.Getenv("GO_FAIL_IF_RESUME_CALLED") == "1"
 	failIfLoadCalled := os.Getenv("GO_FAIL_IF_LOAD_CALLED") == "1"
 	resumeCount := 0
@@ -416,6 +417,11 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			}
 			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperAuthenticateResponse{})})
 		case acp.AgentMethodSessionNew:
+			if raw := os.Getenv("GO_NEW_DELAY"); raw != "" {
+				delay, err := time.ParseDuration(raw)
+				must(err)
+				time.Sleep(delay)
+			}
 			var req helperNewSessionRequest
 			must(json.Unmarshal(msg.Params, &req))
 			if expectedSessionCWD != "" && req.Cwd != expectedSessionCWD {
@@ -488,6 +494,9 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 				}
 			}
 			sessionCount++
+			if hangSessionNewAt > 0 && sessionCount == hangSessionNewAt {
+				continue
+			}
 			if failSessionNewAt > 0 && sessionCount == failSessionNewAt {
 				writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Error: &helperError{Code: -32000, Message: "session creation failed"}})
 				continue
@@ -505,6 +514,10 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 					Modes:         helperSessionModes(currentSessionMode),
 				}),
 			})
+			if path := os.Getenv("GO_NEW_RESPONSE_MARKER"); path != "" {
+				must(os.WriteFile(path, []byte("response attempted"), 0600))
+			}
+
 		case acp.AgentMethodSessionResume:
 			handleSessionRestore(
 				msg,

@@ -17,5 +17,7 @@ jobs:
       - name: Coverage
         run: |
           go test . ./acperror -coverprofile=coverage.out
+          go tool cover -func=coverage.out
+          awk 'NR>1 && $NF==0 {print}' coverage.out
           coverage="$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $3); print $3}')"
           awk -v coverage="$coverage" 'BEGIN { if (coverage < 95.0) exit 1 }'

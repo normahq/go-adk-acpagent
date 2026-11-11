@@ -200,9 +200,7 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	cmd.Stderr = stderr
 
 	l.Debug().
-		Str("binary", cfg.Command[0]).
-		Strs("args", cfg.Command[1:]).
-		Str("cwd", cfg.WorkingDir).
+		Int("argv_count", len(cfg.Command)).
 		Msg("starting acp process")
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
@@ -350,7 +348,6 @@ func (c *Client) NewSessionWithMeta(ctx context.Context, cwd string, mcpServers 
 
 	l := c.loggerForContext(ctx)
 	logEvent := l.Debug().
-		Str("cwd", cwd).
 		Int("mcp_servers", len(mcpServers))
 	logEvent.Msg("sending acp session/new")
 
@@ -470,7 +467,6 @@ func (c *Client) logSessionRestoreStart(ctx context.Context, method, sessionID, 
 	l := c.loggerForContext(ctx)
 	l.Debug().
 		Str("acp_session_id", sessionID).
-		Str("cwd", cwd).
 		Int("mcp_servers", len(mcpServers)).
 		Msg("sending acp " + method)
 }

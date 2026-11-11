@@ -80,3 +80,34 @@ Debug and trace logging omit prompt text, encoded media, resource URIs, and raw
 JSON-RPC payloads. Trace adds protocol metadata and payload byte lengths.
 Provider stderr is independent and may contain provider-owned diagnostics, so
 capture it only in a controlled environment.
+
+## Attachment Outcome Is Unknown
+
+`acp_session_attachment_indeterminate` means protected conversation creation
+cannot safely be repeated. Use the application's supported explicit reset or
+new-conversation action before continuing; sending another ordinary message
+cannot repair the retained fence. The message does not prove remote rejection,
+creation, or history deletion. Caller/lifecycle cancellation remains a context
+error rather than this handled failed final.
+
+Structural `acp setup phase completed` records distinguish initialization gate
+wait, process launch, initialize, attachment preflight/pending intent,
+`session/new`, `session/resume` and post-attachment configuration. Fields include
+`phase`, `method`, `elapsed_ms`, `configured_budget_ms`, `effective_budget_ms`,
+`cause_class` and `outcome`. Effective budget is the remaining original deadline
+at phase entry (`-1` when unbounded); phase logging does not restart the budget.
+Caller cancellation/deadlines and lifecycle shutdown take precedence over an
+internal setup deadline when classifying the current result.
+
+`attempted_unknown` records call entry, not proof of sent bytes or peer
+acceptance. `pending_cleared` describes the adapter's recorded protection state,
+not proven remote rejection. The SDK converts several transport and peer errors
+to the same request-error form; diagnostics do not infer provenance from error
+strings. Raw causes remain in error chains, not phase log fields. Startup argv,
+environment, cwd, prompt, metadata and capability URLs are omitted from these
+records. Provider stderr remains separately controlled by the host.
+
+These records improve evidence for a future incident; they do not identify the
+cause of an earlier timeout. Keep initialize and attachment budgets distinct,
+with earlier callers winning; increasing a timeout or replaying uncertain
+creation is not an automatic recovery policy.

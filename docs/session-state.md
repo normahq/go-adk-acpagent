@@ -123,3 +123,29 @@ agentRuntime, err := acpagent.NewWithContext(ctx, acpagent.Config{
 ```
 
 Partial streaming events do not write `OutputKey`.
+
+## Pending Creation Fence
+
+Lazy initialization or a positive `SetupTimeout` protects session creation by
+recording `SessionStateKey.attachment_indeterminate=true` before entering
+`session/new`. Failure to record that intent prevents the call. A context ending
+after call entry leaves the fence: the remote side may have created a session,
+and neither ordinary resend nor constructing another Agent may replay creation.
+Owner-aware resolution still applies; another owner's session is never reused.
+The retained fence is checked before lazy process initialization.
+
+A successful response records the known remote ID and clears pending creation
+before post-attachment configuration. A later configuration timeout therefore
+retains that known identity rather than declaring creation unknown. Existing
+non-context failure handling can clear pending intent and permit a subsequent
+attempt; this is not an exhaustive claim that every SDK error proves remote
+rejection. SDK v0.13.5 does not expose a reliable sent/accepted discriminator.
+A locally pre-ended invocation starts no new call or pending intent. A
+cancellation racing a recorded intent leaves the conservative fence intact.
+
+An established fence becomes the failed terminal event described in
+[Event mapping](event-mapping.md#indeterminate-conversation-attachment), without
+clearing history, plans, output state or identity. The host owns its explicit
+supported reset/new-conversation action and may create a fresh local lifetime;
+this adapter does not reset automatically or promise physical remote-history
+deletion.

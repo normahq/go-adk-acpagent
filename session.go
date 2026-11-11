@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 	adkagent "google.golang.org/adk/v2/agent"
@@ -129,12 +130,15 @@ func (a *Agent) ensureRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 		return remoteSession{}, boundedModelAdmissionError(err)
 	}
 	defer admission.release()
-	return a.ensureRemoteSessionHeld(ctx, logCtx, logger, yield, admission)
-}
-
-func (a *Agent) ensureRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, yield func(*session.Event, error) bool, admission *modelAdmission) (remoteSession, error) {
 	cfg, err := a.resolveSessionConfig(ctx)
 	if err != nil {
+		return remoteSession{}, err
+	}
+	return a.ensureRemoteSessionHeld(ctx, logCtx, logger, yield, admission, cfg)
+}
+
+func (a *Agent) ensureRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, yield func(*session.Event, error) bool, admission *modelAdmission, cfg acpSessionConfig) (remoteSession, error) {
+	if err := a.invocationContextError(ctx); err != nil {
 		return remoteSession{}, err
 	}
 
@@ -181,7 +185,9 @@ func (a *Agent) verifyExistingDesiredHeld(ctx adkagent.InvocationContext, logCtx
 	defer a.client.endSessionOperation(active)
 	setup, cancel := a.setupContext(logCtx)
 	defer cancel()
+	started := time.Now()
 	resp, err := a.client.ResumeSessionWithMeta(setup, cfg.sessionID, cfg.cwd, a.mcpServers, cfg.meta)
+	a.logSetupPhase(setup, ctx, logger, "session_resume", "session/resume", "known_id", started, a.setupTimeout, err)
 	if err != nil {
 		if setup.Err() != nil {
 			admission.invalidateVerification()
@@ -195,7 +201,9 @@ func (a *Agent) verifyExistingDesiredHeld(ctx adkagent.InvocationContext, logCtx
 		return remoteSession{}, ErrDesiredModelUnavailable
 	}
 	attachment := admission.replaceAttachment(cfg.sessionID)
+	started = time.Now()
 	control, err := a.applyDesiredModelCurrentHeld(setup, admission, cfg.sessionID, resp.ConfigOptions, attachment)
+	a.logSetupPhase(setup, ctx, logger, "post_attach_config", "session/set_config_option", "known_id", started, a.setupTimeout, err)
 	if err != nil {
 		return remoteSession{}, err
 	}
@@ -221,6 +229,12 @@ func (a *Agent) recoverRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx 
 	if err != nil {
 		return remoteSession{}, err
 	}
+	if err := a.invocationContextError(ctx); err != nil {
+		return remoteSession{}, err
+	}
+	if cfg.attachmentIndeterminate {
+		return remoteSession{}, ErrSessionAttachmentIndeterminate
+	}
 	attachmentInvalidated := false
 	if isACPSessionNotFoundError(promptErr) {
 		admission.invalidateAttachment()
@@ -234,12 +248,15 @@ func (a *Agent) recoverRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx 
 		defer a.client.endSessionOperation(active)
 		setup, cancel := a.setupContext(logCtx)
 		defer cancel()
+		started := time.Now()
 		resumeResp, err := a.client.ResumeSessionWithMeta(setup, cfg.sessionID, cfg.cwd, a.mcpServers, cfg.meta)
+		a.logSetupPhase(setup, ctx, logger, "session_resume", "session/resume", "known_id", started, a.setupTimeout, err)
 		if err != nil && setup.Err() != nil {
 			err = setup.Err()
 		}
 		if err == nil {
 			attachment := admission.replaceAttachment(cfg.sessionID)
+			started = time.Now()
 			configValues, finalOptions, configErr := a.client.applySessionConfigRequiredWithOptions(
 				setup,
 				cfg.sessionID,
@@ -252,6 +269,7 @@ func (a *Agent) recoverRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx 
 				cfg.configValues = withoutModelConfigOptions(configValues, finalOptions)
 			}
 			control, modelErr := a.applyDesiredModelCurrentHeld(setup, admission, cfg.sessionID, finalOptions, attachment)
+			a.logSetupPhase(setup, ctx, logger, "post_attach_config", "session/set_config_option", "known_id", started, a.setupTimeout, errors.Join(configErr, modelErr))
 			if modelErr != nil {
 				return remoteSession{}, modelErr
 			}
@@ -271,7 +289,6 @@ func (a *Agent) recoverRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx 
 		}
 		if isACPSessionAlreadyExistsError(err) {
 			logger.Debug().
-				Err(err).
 				Str("acp_session_id", cfg.sessionID).
 				Msg("acp session already active after prompt failure")
 			if err := a.persistRemoteSessionBinding(ctx, cfg.sessionID, cfg.metaJSON, cfg.configValues, nil); err != nil {
@@ -290,7 +307,6 @@ func (a *Agent) recoverRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx 
 		// attachment admission before session/new.
 		a.client.endSessionOperation(active)
 		logger.Warn().
-			Err(err).
 			Str("acp_session_id", cfg.sessionID).
 			Msg("acp session resume unavailable after prompt failure; falling back to session/new")
 	}
@@ -309,32 +325,71 @@ func (a *Agent) recoverRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx 
 	return recovered, nil
 }
 
-func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, cfg acpSessionConfig, firstPromptInstructions string, yield func(*session.Event, error) bool, admission *modelAdmission) (remoteSession, error) {
+func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, cfg acpSessionConfig, firstPromptInstructions string, yield func(*session.Event, error) bool, admission *modelAdmission) (result remoteSession, resultErr error) {
+	if err := a.invocationContextError(ctx); err != nil {
+		return remoteSession{}, err
+	}
 	setup, cancel := a.setupContext(logCtx)
 	defer cancel()
+	phase, method, outcome := "attachment_preflight", "", "not_attempted"
+	started := time.Now()
+	defer func() {
+		a.logSetupPhase(setup, ctx, logger, phase, method, outcome, started, a.setupTimeout, resultErr)
+	}()
+
 	if err := setup.Err(); err != nil {
 		return remoteSession{}, err
 	}
 	// Persist the pending outcome before dispatch, while the invocation is live.
 	// Cancellation may prevent the runner from persisting any later event.
+	a.logSetupPhase(setup, ctx, logger, phase, method, outcome, started, a.setupTimeout, nil)
+	phase, started = "attachment_pending", time.Now()
 	if a.protectAttachments {
 		if err := a.persistAttachmentOutcome(ctx, cfg, true, yield); err != nil {
 			return remoteSession{}, err
 		}
 	}
+	if a.protectAttachments {
+		outcome = "retained_unknown"
+	}
+	a.logSetupPhase(setup, ctx, logger, phase, method, outcome, started, a.setupTimeout, nil)
+	// The SDK does not expose whether a call wrote bytes or was accepted.
+	// A pre-call cancellation is known locally; after entry, timeout is unknown.
+	if err := a.invocationContextError(ctx); err != nil {
+		return remoteSession{}, err
+	}
+	if err := setup.Err(); err != nil {
+		return remoteSession{}, err
+	}
+	phase, method, outcome, started = "session_new", "session/new", "attempted_unknown", time.Now()
 	resp, err := a.client.NewSessionWithMeta(setup, cfg.cwd, a.mcpServers, cfg.meta)
 	if err != nil {
-		if setup.Err() != nil {
-			return remoteSession{}, setup.Err()
+		cause := a.invocationContextError(ctx)
+		if cause == nil {
+			cause = errors.Join(setup.Err(), context.Cause(setup))
+		}
+		if cause != nil {
+			if a.protectAttachments {
+				return remoteSession{}, errors.Join(ErrSessionAttachmentIndeterminate, cause, err)
+			}
+			return remoteSession{}, errors.Join(cause, err)
 		}
 		if a.protectAttachments {
 			if stateErr := a.persistAttachmentOutcome(ctx, cfg, false, yield); stateErr != nil {
 				return remoteSession{}, errors.Join(err, stateErr)
 			}
 		}
+		if a.protectAttachments {
+			outcome = "pending_cleared"
+		} else {
+			outcome = "no_pending"
+		}
 		return remoteSession{}, err
 	}
 
+	outcome = "known_id"
+	a.logSetupPhase(setup, ctx, logger, phase, method, outcome, started, a.setupTimeout, nil)
+	phase, method, started = "post_attach_config", "session/set_config_option", time.Now()
 	sessionID := string(resp.SessionId)
 	active := &activePrompt{sessionID: acp.SessionId(sessionID), logger: logger}
 	if err := a.client.beginSessionOperation(active); err != nil {
@@ -389,7 +444,6 @@ func (a *Agent) createRemoteSession(ctx adkagent.InvocationContext, logCtx conte
 func (a *Agent) logBoundRemoteSession(logger logger, message, remoteSessionID, cwd, metaJSON string) {
 	event := logger.Debug().
 		Str("acp_session_id", remoteSessionID).
-		Str("cwd", cwd).
 		Bool("has_meta", strings.TrimSpace(metaJSON) != "" && strings.TrimSpace(metaJSON) != "{}")
 	if len(a.sessionConfig) > 0 {
 		event = event.Int("session_config_values", len(a.sessionConfig))
