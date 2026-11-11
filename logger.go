@@ -139,14 +139,6 @@ func (e *logEvent) Str(key string, value string) *logEvent {
 	return e
 }
 
-func (e *logEvent) Strs(key string, value []string) *logEvent {
-	if !e.enabled {
-		return e
-	}
-	e.attrs = append(e.attrs, slog.Any(key, value))
-	return e
-}
-
 func (e *logEvent) Msg(msg string) {
 	if e.logger == nil || !e.enabled {
 		return
