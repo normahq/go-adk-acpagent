@@ -416,6 +416,11 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 			}
 			writeEnvelope(stdout, helperEnvelope{JSONRPC: "2.0", ID: msg.ID, Result: mustJSON(helperAuthenticateResponse{})})
 		case acp.AgentMethodSessionNew:
+			if raw := os.Getenv("GO_NEW_DELAY"); raw != "" {
+				delay, err := time.ParseDuration(raw)
+				must(err)
+				time.Sleep(delay)
+			}
 			var req helperNewSessionRequest
 			must(json.Unmarshal(msg.Params, &req))
 			if expectedSessionCWD != "" && req.Cwd != expectedSessionCWD {
@@ -505,6 +510,10 @@ func runACPHelper(stdin *os.File, stdout *os.File) {
 					Modes:         helperSessionModes(currentSessionMode),
 				}),
 			})
+			if path := os.Getenv("GO_NEW_RESPONSE_MARKER"); path != "" {
+				must(os.WriteFile(path, []byte("response attempted"), 0600))
+			}
+
 		case acp.AgentMethodSessionResume:
 			handleSessionRestore(
 				msg,

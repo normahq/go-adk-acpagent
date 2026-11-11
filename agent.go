@@ -336,7 +336,7 @@ func (a *Agent) setupContext(ctx context.Context) (context.Context, context.Canc
 	return context.WithCancel(ctx)
 }
 
-func (a *Agent) ensureInitialized(ctx context.Context) error {
+func (a *Agent) ensureInitialized(ctx context.Context) (resultErr error) {
 	var startup context.Context
 	var cancel context.CancelFunc
 	if a.initializeTimeout > 0 {
@@ -345,6 +345,12 @@ func (a *Agent) ensureInitialized(ctx context.Context) error {
 		startup, cancel = context.WithCancel(ctx)
 	}
 	defer cancel()
+	phase, method, outcome := "initialization_gate", "", "not_attempted"
+	started := time.Now()
+	l := a.invocationLogger(ctx)
+	defer func() {
+		a.logSetupPhase(startup, ctx, l, phase, method, outcome, started, a.initializeTimeout, resultErr)
+	}()
 	// Lifecycle cancellation applies while queued, launching, and initializing.
 	stopLifecycle := context.AfterFunc(a.lifecycle, cancel)
 	defer stopLifecycle()
@@ -366,9 +372,12 @@ func (a *Agent) ensureInitialized(ctx context.Context) error {
 		return err
 	}
 	if a.client != nil {
+		outcome = "ready"
 		return nil
 	}
 
+	a.logSetupPhase(startup, ctx, l, phase, method, "admitted", started, a.initializeTimeout, nil)
+	phase, method, outcome, started = "process_launch", "", "attempted_unknown", time.Now()
 	// The startup operation may cancel a launching child, but a healthy child's
 	// lifetime must outlive the caller and its initialization deadline.
 	processContext, cancelProcess := context.WithCancel(a.processContext)
@@ -382,6 +391,8 @@ func (a *Agent) ensureInitialized(ctx context.Context) error {
 		}
 		return err
 	}
+	a.logSetupPhase(startup, ctx, l, phase, method, "process_started", started, a.initializeTimeout, nil)
+	phase, method, outcome, started = "initialize", "initialize", "attempted_unknown", time.Now()
 	clientCancel := client.cancelProcess
 	client.cancelProcess = func() { clientCancel(); cancelProcess() }
 	resp, err := client.Initialize(startup)
@@ -396,6 +407,7 @@ func (a *Agent) ensureInitialized(ctx context.Context) error {
 	if err != nil {
 		return closeClientAfterError(client, fmt.Errorf("initialize acp client: %w", err), "close acp client after initialize failure")
 	}
+	outcome = "ready"
 	a.client = client
 	a.promptSupport = promptSupportFromCapabilities(resp.AgentCapabilities.PromptCapabilities)
 	return nil
@@ -403,6 +415,10 @@ func (a *Agent) ensureInitialized(ctx context.Context) error {
 
 func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
+		if err := a.invocationContextError(ctx); err != nil {
+			yield(nil, err)
+			return
+		}
 		admission, err := a.modelRegistry.acquire(ctx, ctx.Session())
 		if err != nil {
 			yield(nil, boundedModelAdmissionError(err))
@@ -410,6 +426,17 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		}
 		defer admission.release()
 		yield = a.stampOwnership(ctx, yield)
+		cfg, err := a.resolveSessionConfig(ctx)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		if cfg.attachmentIndeterminate {
+			now := time.Now()
+			a.logSetupPhase(ctx, ctx, a.invocationLogger(ctx), "attachment_preflight", "", "retained_unknown", now, a.setupTimeout, ErrSessionAttachmentIndeterminate)
+			a.yieldAttachmentError(ctx, ErrSessionAttachmentIndeterminate, yield)
+			return
+		}
 		if err := a.ensureInitialized(ctx); err != nil {
 			yield(nil, err)
 			return
@@ -425,9 +452,9 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 		adkSessionID := ctx.Session().ID()
 		logCtx, logger := a.sessionLogger(ctx, baseLogger, adkSessionID)
 
-		remote, err := a.ensureRemoteSessionHeld(ctx, logCtx, logger, yield, admission)
+		remote, err := a.ensureRemoteSessionHeld(ctx, logCtx, logger, yield, admission, cfg)
 		if err != nil {
-			yield(nil, err)
+			a.yieldAttachmentError(ctx, err, yield)
 			return
 		}
 		if a.yieldSessionConfigError(ctx, logger, remote, yield) {
@@ -463,7 +490,7 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			result.release()
 			recovered, recoverErr := a.recoverRemoteSessionHeld(ctx, logCtx, logger, err, yield, admission)
 			if recoverErr != nil {
-				yield(nil, recoverErr)
+				a.yieldAttachmentError(ctx, recoverErr, yield)
 				return
 			}
 			remote = recovered
@@ -533,6 +560,36 @@ func (a *Agent) run(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, er
 			return
 		}
 	}
+}
+
+const attachmentIndeterminateCode = "acp_session_attachment_indeterminate"
+const attachmentIndeterminateMessage = "The provider conversation attachment outcome is unknown and it cannot safely continue. Reset or start a new conversation using your application's supported action before continuing. This does not confirm deletion of remote history."
+
+func (a *Agent) invocationContextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, context.Cause(ctx))
+	}
+	if a.lifecycle != nil && a.lifecycle.Err() != nil {
+		return errors.Join(a.lifecycle.Err(), context.Cause(a.lifecycle))
+	}
+	return nil
+}
+
+func (a *Agent) yieldAttachmentError(ctx adkagent.InvocationContext, err error, yield func(*session.Event, error) bool) {
+	if cause := a.invocationContextError(ctx); cause != nil {
+		yield(nil, cause)
+		return
+	}
+	if !errors.Is(err, ErrSessionAttachmentIndeterminate) {
+		yield(nil, err)
+		return
+	}
+	event := session.NewEvent(ctx, ctx.InvocationID())
+	event.TurnComplete = true
+	event.ErrorCode = attachmentIndeterminateCode
+	event.ErrorMessage = attachmentIndeterminateMessage
+	event.CustomMetadata = map[string]any{acperror.ProviderErrorMetadataKey: (&acperror.ProviderError{Kind: acperror.KindUnknown, Scope: acperror.ScopeSession, Code: attachmentIndeterminateCode, Message: attachmentIndeterminateMessage}).Metadata()}
+	yield(event, nil)
 }
 
 func (a *Agent) yieldSessionConfigError(ctx adkagent.InvocationContext, logger logger, remote remoteSession, yield func(*session.Event, error) bool) bool {

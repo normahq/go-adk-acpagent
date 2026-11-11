@@ -2,15 +2,19 @@ package acpagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"google.golang.org/adk/v2/agent"
-	runnerpkg "google.golang.org/adk/v2/runner"
-	"google.golang.org/adk/v2/session"
-	"google.golang.org/genai"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/normahq/go-adk-acpagent/v2/acperror"
+	"google.golang.org/adk/v2/agent"
+	runnerpkg "google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
 func TestLazyAgentPreservesConfiguredEnvironment(t *testing.T) {
@@ -207,48 +211,99 @@ func TestLazyResumeTimeoutPreservesKnownID(t *testing.T) {
 }
 
 func TestLazyIndeterminateAttachmentSurvivesRunnerReload(t *testing.T) {
-	path := t.TempDir() + "/methods"
-	a, err := NewWithContext(t.Context(), Config{Command: helperCommandWithEnv(t, map[string]string{"GO_METHOD_LOG": path, "GO_HANG_METHOD": "session/new"}), WorkingDir: t.TempDir(), LazyInitialization: true, SetupTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTestCloser(t, a)
-	if err := a.ensureInitialized(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	a.setupTimeout = 100 * time.Millisecond
-	svc := session.InMemoryService()
-	r, err := runnerpkg.New(runnerpkg.Config{AppName: "lazy", Agent: a, SessionService: svc})
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "lazy", UserID: "u"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range 2 {
-		var runErr error
-		for _, err := range r.Run(t.Context(), "u", created.Session.ID(), genai.NewContentFromText("hello", genai.RoleUser), agent.RunConfig{}) {
-			if err != nil {
-				runErr = err
+	for _, response := range []string{"no response", "late"} {
+		t.Run(response, func(t *testing.T) {
+			path := t.TempDir() + "/methods"
+			env := map[string]string{"GO_METHOD_LOG": path, "GO_HANG_METHOD": "session/new"}
+			if response == "late" {
+				delete(env, "GO_HANG_METHOD")
+				env["GO_NEW_DELAY"] = "200ms"
+				env["GO_NEW_RESPONSE_MARKER"] = path + ".response"
 			}
-		}
-		if i == 0 && !errors.Is(runErr, context.DeadlineExceeded) {
-			t.Fatalf("first run: %v", runErr)
-		}
-		if i == 1 && !errors.Is(runErr, ErrSessionAttachmentIndeterminate) {
-			t.Fatalf("second run: %v", runErr)
-		}
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(string(data), "session/new\n") != 1 {
-		t.Fatalf("duplicate attachment: %s", data)
+			command := helperCommandWithEnv(t, env)
+			a, err := NewWithContext(t.Context(), Config{Command: command, WorkingDir: t.TempDir(), LazyInitialization: true, SetupTimeout: 5 * time.Second, OutputKey: "result"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeTestCloser(t, a)
+			if err := a.ensureInitialized(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			a.setupTimeout = 100 * time.Millisecond
+			svc := session.InMemoryService()
+			r, err := runnerpkg.New(runnerpkg.Config{AppName: "lazy", Agent: a, SessionService: svc})
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "lazy", UserID: "u", State: map[string]any{"result": "retained output", PlanStateKey: map[string]any{"saved": "plan"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertFailedTurn := func(r *runnerpkg.Runner) {
+				t.Helper()
+				var finals int
+				for event, runErr := range r.Run(t.Context(), "u", created.Session.ID(), genai.NewContentFromText("hello", genai.RoleUser), agent.RunConfig{}) {
+					if runErr != nil {
+						t.Fatalf("live indeterminate turn returned iterator error: %v", runErr)
+					}
+					if event.TurnComplete {
+						finals++
+						providerErr, ok := acperror.FromADKMetadata(event.CustomMetadata)
+						if _, changed := event.Actions.StateDelta[SessionStateKey]; changed {
+							t.Fatal("failed terminal overwrote the pending marker")
+						}
+						if event.ErrorMessage != attachmentIndeterminateMessage || providerErr != nil && providerErr.RetryAt != nil {
+							t.Fatal("unsafe recovery notice or invented retry time")
+						}
+						if event.Partial || event.Content != nil || event.ErrorCode != "acp_session_attachment_indeterminate" || !ok || providerErr.Kind != acperror.KindUnknown || providerErr.Scope != acperror.ScopeSession {
+							t.Fatalf("indeterminate final=%+v metadata=%+v", event, providerErr)
+						}
+					}
+				}
+				if finals != 1 {
+					t.Fatalf("failed terminal events=%d, want1", finals)
+				}
+			}
+			assertFailedTurn(r)
+			if response == "late" {
+				waitInitializeFile(t, path+".response", "response attempted")
+			}
+			assertFailedTurn(r)
+			reloaded, err := svc.Get(t.Context(), &session.GetRequest{AppName: "lazy", UserID: "u", SessionID: created.Session.ID()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if output, err := reloaded.Session.State().Get("result"); err != nil || output != "retained output" {
+				t.Fatalf("retained output=%v,%v", output, err)
+			}
+			if plan, err := reloaded.Session.State().Get(PlanStateKey); err != nil || plan == nil {
+				t.Fatal("retained plan lost")
+			}
+			cfg, err := a.resolveSessionConfig(testInvocationContext{Context: t.Context(), session: reloaded.Session})
+			if err != nil || !cfg.attachmentIndeterminate || cfg.sessionID != "" {
+				t.Fatalf("retained fence=%+v, %v", cfg, err)
+			}
+			reopened, err := NewWithContext(t.Context(), Config{Command: command, WorkingDir: a.workingDir, LazyInitialization: true, SetupTimeout: 5 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeTestCloser(t, reopened)
+			reopenedRunner, err := runnerpkg.New(runnerpkg.Config{AppName: "lazy", Agent: reopened, SessionService: svc})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertFailedTurn(reopenedRunner)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(string(data), "initialize\n") != 1 || strings.Count(string(data), "session/new\n") != 1 || strings.Contains(string(data), "session/prompt\n") || strings.Contains(string(data), "session/resume\n") {
+				t.Fatalf("duplicate attachment: %s", data)
+			}
+
+		})
 	}
 }
-
 func TestLazyKnownIDSurvivesConfigurationTimeout(t *testing.T) {
 	a, err := NewWithContext(t.Context(), Config{Command: helperCommandWithEnv(t, map[string]string{"GO_HANG_METHOD": "session/set_config_option", "GO_CURRENT_SESSION_MODEL": "old", "GO_EXPECT_SESSION_MODEL": "new"}), WorkingDir: t.TempDir(), LazyInitialization: true, SetupTimeout: 5 * time.Second, SessionConfig: []SessionConfigValue{SelectSessionConfigValue("model", "new")}})
 	if err != nil {
@@ -330,7 +385,8 @@ func TestLazyConfigurationValidation(t *testing.T) {
 }
 
 func TestLazyDefinitiveAttachmentFailureCanRetry(t *testing.T) {
-	a, err := NewWithContext(t.Context(), Config{Command: helperCommandWithEnv(t, map[string]string{"GO_FAIL_METHOD": "session/new"}), WorkingDir: t.TempDir(), LazyInitialization: true, SetupTimeout: 5 * time.Second})
+	var logs testLogBuffer
+	a, err := NewWithContext(t.Context(), Config{Command: helperCommandWithEnv(t, map[string]string{"GO_FAIL_SESSION_NEW_AT": "1"}), WorkingDir: t.TempDir(), LazyInitialization: true, SetupTimeout: 5 * time.Second, Logger: testSlogLogger(&logs, slog.LevelDebug)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,11 +400,29 @@ func TestLazyDefinitiveAttachmentFailureCanRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := testInvocationContext{Context: t.Context(), session: created.Session}
-	for range 2 {
-		_, err := a.ensureRemoteSession(ctx, ctx, newLogger(nil, ""), nil)
-		if err == nil || errors.Is(err, ErrSessionAttachmentIndeterminate) {
-			t.Fatalf("definitive failure=%v", err)
+	if _, err := a.ensureRemoteSession(ctx, ctx, a.invocationLogger(ctx), nil); err == nil || errors.Is(err, ErrSessionAttachmentIndeterminate) {
+		t.Fatalf("bounded non-context failure=%v", err)
+	}
+	cfg, err := a.resolveSessionConfig(ctx)
+	if err != nil || cfg.attachmentIndeterminate {
+		t.Fatal("non-context failure retained a pending marker")
+	}
+	remote, err := a.ensureRemoteSession(ctx, ctx, a.invocationLogger(ctx), nil)
+	if err != nil || remote.id != "session-2" {
+		t.Fatalf("supported retry=%+v,%v", remote, err)
+	}
+	cleared := false
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
 		}
+		if record["phase"] == "session_new" && record["cause_class"] == "protocol_or_other" {
+			cleared = record["outcome"] == "pending_cleared"
+		}
+	}
+	if !cleared {
+		t.Fatal("diagnostics did not report actual cleared protection state")
 	}
 }
 
@@ -368,7 +442,8 @@ func TestLazyInvocationReportsLaunchFailure(t *testing.T) {
 }
 
 func TestLazyAttachmentRequiresRecordedPendingState(t *testing.T) {
-	a, err := NewWithContext(t.Context(), Config{Command: helperCommand(t), WorkingDir: t.TempDir(), LazyInitialization: true})
+	path := t.TempDir() + "/methods"
+	a, err := NewWithContext(t.Context(), Config{Command: helperCommandWithEnv(t, map[string]string{"GO_METHOD_LOG": path}), WorkingDir: t.TempDir(), LazyInitialization: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,4 +465,13 @@ func TestLazyAttachmentRequiresRecordedPendingState(t *testing.T) {
 	if _, err := a.ensureRemoteSession(ctx, ctx, newLogger(nil, ""), func(*session.Event, error) bool { return false }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("consumer stop=%v", err)
 	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || strings.Contains(string(data), "session/new\n") {
+		t.Fatalf("failed pending persistence reached new RPC: %q,%v", data, readErr)
+	}
+	cfg, err := a.resolveSessionConfig(ctx)
+	if err != nil || !cfg.attachmentIndeterminate {
+		t.Fatal("stopped consumer erased already-recorded pending intent")
+	}
+
 }

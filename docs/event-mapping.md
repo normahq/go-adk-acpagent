@@ -136,3 +136,29 @@ On every successful prompt, the adapter emits one final ADK event:
 
 ACP `available_commands_update`, `session_info_update`, unsupported updates,
 and non-user-visible updates are logged and not emitted as ADK events.
+
+## Indeterminate Conversation Attachment
+
+When protected `session/new` creation has an unknown outcome, a live invocation
+emits one failed, non-partial `TurnComplete` with no model content or output-key
+update. Its stable code is `acp_session_attachment_indeterminate`. The fixed
+message asks the host to reset or start a new conversation through its supported
+action; another ordinary message cannot safely repair this state. It does not
+confirm deletion of remote history.
+
+The event carries existing `acperror.ProviderError` metadata with `KindUnknown`
+and `ScopeSession`, the same code/message, and no retry time. This is a failed
+session outcome, not a successful model reply or a provider/account outage.
+Hosts should keep their ordinary failed-final delivery policy; session scope
+must not be interpreted as permission to switch provider members.
+
+The first internal attachment deadline can produce this final only after a
+protected creation call was entered while the invocation and lifecycle remain
+live. Later invocations, including a reconstructed Agent with retained state,
+return the same failed final without launching or attaching again. Caller
+cancellation, an earlier caller deadline, or lifecycle shutdown remains an
+iterator context error with its original cause and never becomes a handled
+final. Unrelated initialization, known-ID configuration and transient prompt
+errors retain their existing behavior. Direct lower-level attachment operations
+retain `errors.Is` compatibility with their context causes and
+`ErrSessionAttachmentIndeterminate`.

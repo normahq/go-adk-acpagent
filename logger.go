@@ -2,7 +2,9 @@ package acpagent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"time"
 )
 
 const levelTrace = slog.LevelDebug - 4
@@ -154,4 +156,31 @@ func (e *logEvent) Msg(msg string) {
 		ctx = context.Background()
 	}
 	e.logger.LogAttrs(ctx, e.level, msg, e.attrs...)
+}
+
+// logSetupPhase records only local timing and bounded provenance. SDK call entry
+// does not prove that bytes were sent or that the peer accepted the operation.
+func (a *Agent) logSetupPhase(setup, caller context.Context, l logger, phase, method, outcome string, started time.Time, budget time.Duration, err error) {
+	cause := "none"
+	switch {
+	case errors.Is(caller.Err(), context.DeadlineExceeded):
+		cause = "caller_deadline"
+	case caller.Err() != nil:
+		cause = "caller_canceled"
+	case a.lifecycle != nil && a.lifecycle.Err() != nil:
+		cause = "lifecycle_canceled"
+	case errors.Is(setup.Err(), context.DeadlineExceeded):
+		cause = "setup_deadline"
+	case setup.Err() != nil:
+		cause = "setup_canceled"
+	case err != nil:
+		cause = "protocol_or_other"
+	}
+	effective := -1
+	if deadline, ok := setup.Deadline(); ok {
+		effective = int(max(0, deadline.Sub(started).Milliseconds()))
+	}
+	l.Debug().Str("phase", phase).Str("method", method).Str("outcome", outcome).
+		Int("elapsed_ms", int(time.Since(started).Milliseconds())).Int("configured_budget_ms", int(budget.Milliseconds())).
+		Int("effective_budget_ms", effective).Str("cause_class", cause).Msg("acp setup phase completed")
 }
