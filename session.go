@@ -172,7 +172,12 @@ func (a *Agent) ensureRemoteSessionHeld(ctx adkagent.InvocationContext, logCtx c
 }
 
 func (a *Agent) verifyExistingDesiredHeld(ctx adkagent.InvocationContext, logCtx context.Context, logger logger, cfg acpSessionConfig, remote remoteSession, admission *modelAdmission) (remoteSession, error) {
-	if admission.desired(a.desiredModel) == "" {
+	desired := admission.desired(a.desiredModel)
+	if desired == "" {
+		return remote, nil
+	}
+	if control := admission.observedForAttachment(cfg.sessionID); control != nil && control.currentModel == desired {
+		remote.control = control
 		return remote, nil
 	}
 	if !a.client.SupportsSessionResume() {

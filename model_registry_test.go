@@ -25,6 +25,15 @@ func createRegistrySession(t *testing.T, service session.Service, id string) ses
 	return created.Session
 }
 
+func runRegistryPrompt(t *testing.T, r *runner.Runner, userID, sessionID, prompt string) {
+	t.Helper()
+	for _, runErr := range r.Run(t.Context(), userID, sessionID, genai.NewContentFromText(prompt, genai.RoleUser), adkagent.RunConfig{}) {
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+	}
+}
+
 func TestModelRegistryAdmissionAndTokens(t *testing.T) {
 	service := session.InMemoryService()
 	first := createRegistrySession(t, service, "first")
@@ -94,6 +103,49 @@ func TestModelRegistryAdmissionAndTokens(t *testing.T) {
 	replacement.release()
 	if len(registry.entries) != 0 {
 		t.Fatal("last exact release after close did not finalize registry entry")
+	}
+}
+
+func TestObservedForAttachmentRequiresExactCurrentObservation(t *testing.T) {
+	service := session.InMemoryService()
+	sess := createRegistrySession(t, service, "observed-attachment")
+	admission, err := newModelRegistry().acquire(t.Context(), sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admission.release()
+
+	control := newSessionControlState(helperModelConfigOptions("model-b", "provider.model"), "generation")
+	attachment := admission.replaceAttachment("remote-1")
+	admission.observeCurrent(nil)
+	if got := admission.observedForAttachment("remote-1"); got != nil {
+		t.Fatalf("missing observation = %#v, want nil", got)
+	}
+	if !admission.confirmCurrentAttachment(control, attachment) {
+		t.Fatal("current attachment observation was rejected")
+	}
+	if got := admission.observedForAttachment("remote-1"); got != control {
+		t.Fatalf("exact observation = %#v, want %#v", got, control)
+	}
+	if got := admission.observedForAttachment("remote-2"); got != nil {
+		t.Fatalf("mismatched attachment observation = %#v, want nil", got)
+	}
+	if got := admission.observedForAttachment(""); got != nil {
+		t.Fatalf("empty attachment observation = %#v, want nil", got)
+	}
+
+	admission.registry.mu.Lock()
+	admission.entry.controlToken = attachment - 1
+	admission.registry.mu.Unlock()
+	if got := admission.observedForAttachment("remote-1"); got != nil {
+		t.Fatalf("stale-token observation = %#v, want nil", got)
+	}
+	admission.registry.mu.Lock()
+	admission.entry.controlToken = attachment
+	admission.registry.mu.Unlock()
+	admission.invalidateVerification()
+	if got := admission.observedForAttachment("remote-1"); got != nil {
+		t.Fatalf("invalidated observation = %#v, want nil", got)
 	}
 }
 
@@ -878,6 +930,129 @@ func TestDesiredModelExistingAttachmentUnavailablePreventsPrompt(t *testing.T) {
 	}
 }
 
+func TestLiveDesiredModelReusesExactObservationAcrossPromptsWithoutResume(t *testing.T) {
+	methodLog := t.TempDir() + "/methods.log"
+	agent, err := NewWithContext(t.Context(), Config{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_CURRENT_SESSION_MODEL": "model-a",
+			"GO_EXPECT_SESSION_MODEL":  "model-b",
+			"GO_SESSION_MODELS":        "model-b",
+			"GO_EXPECT_PROMPTS":        expectedPromptsJSON(t, "hello", "second", "third"),
+			"GO_FAIL_IF_RESUME_CALLED": "1",
+			"GO_METHOD_LOG":            methodLog,
+		}),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestCloser(t, agent)
+
+	service := session.InMemoryService()
+	stored := runControlSession(t, agent, service, "live-reuse", "user")
+	if got := agent.SessionControl().ChangeModel(t.Context(), stored, "model-b"); got.Outcome != ModelChangeApplied {
+		t.Fatalf("ChangeModel = %#v", got)
+	}
+	r, err := runner.New(runner.Config{AppName: "live-reuse", Agent: agent, SessionService: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRegistryPrompt(t, r, "user", stored.ID(), "second")
+	runRegistryPrompt(t, r, "user", stored.ID(), "third")
+
+	methods, err := os.ReadFile(methodLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(methods)
+	for method, want := range map[string]int{
+		"session/new":               1,
+		"session/set_config_option": 1,
+		"session/resume":            0,
+		"session/prompt":            3,
+	} {
+		if got := strings.Count(text, method); got != want {
+			t.Fatalf("%s count = %d, want %d:\n%s", method, got, want, text)
+		}
+	}
+}
+
+func TestConstructionDesiredModelReusesExactObservationAcrossPromptsWithoutResume(t *testing.T) {
+	methodLog := t.TempDir() + "/methods.log"
+	desired := "model-b"
+	agent, err := NewWithContext(t.Context(), Config{
+		Command: helperCommandWithEnv(t, map[string]string{
+			"GO_CURRENT_SESSION_MODEL": "model-a",
+			"GO_EXPECT_SESSION_MODEL":  desired,
+			"GO_SESSION_MODELS":        desired,
+			"GO_EXPECT_PROMPTS":        expectedPromptsJSON(t, "first", "second"),
+			"GO_FAIL_IF_RESUME_CALLED": "1",
+			"GO_METHOD_LOG":            methodLog,
+		}),
+		WorkingDir:   t.TempDir(),
+		DesiredModel: &desired,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestCloser(t, agent)
+
+	service := session.InMemoryService()
+	created := createRegistrySession(t, service, "construction-reuse")
+	r, err := runner.New(runner.Config{AppName: "app", Agent: agent, SessionService: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRegistryPrompt(t, r, "user", created.ID(), "first")
+	runRegistryPrompt(t, r, "user", created.ID(), "second")
+
+	methods, err := os.ReadFile(methodLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(methods)
+	for method, want := range map[string]int{
+		"session/new":               1,
+		"session/set_config_option": 1,
+		"session/resume":            0,
+		"session/prompt":            2,
+	} {
+		if got := strings.Count(text, method); got != want {
+			t.Fatalf("%s count = %d, want %d:\n%s", method, got, want, text)
+		}
+	}
+}
+
+func TestDesiredModelWrongExactObservationRemainsUnavailableWithoutResume(t *testing.T) {
+	desired := "model-b"
+	agent, err := NewWithContext(t.Context(), Config{
+		Command:      helperCommandWithEnv(t, map[string]string{"GO_CURRENT_SESSION_MODEL": "model-a"}),
+		WorkingDir:   t.TempDir(),
+		DesiredModel: &desired,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestCloser(t, agent)
+
+	ctx := newStateContext(t, map[string]any{})
+	admission, err := agent.modelRegistry.acquire(t.Context(), ctx.Session())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admission.release()
+	attachment := admission.replaceAttachment("remote-1")
+	wrong := newSessionControlState(helperModelConfigOptions("model-a", "provider.model"), "generation")
+	if !admission.confirmCurrentAttachment(wrong, attachment) {
+		t.Fatal("wrong-model observation was not installed")
+	}
+
+	_, err = agent.verifyExistingDesiredHeld(ctx, t.Context(), newLogger(nil, ""), acpSessionConfig{sessionID: "remote-1"}, remoteSession{id: "remote-1"}, admission)
+	if !errors.Is(err, ErrDesiredModelUnavailable) {
+		t.Fatalf("verifyExistingDesiredHeld error = %v, want model unavailable", err)
+	}
+}
+
 func TestClosedRegistryRejectsInternalSessionEntryPoints(t *testing.T) {
 	agent := &Agent{modelRegistry: newModelRegistry()}
 	agent.modelRegistry.close()
@@ -962,7 +1137,7 @@ func TestConfirmedLiveDesiredSurvivesSessionNotFoundRecovery(t *testing.T) {
 			"GO_SESSION_MODELS":                  "model-b",
 			"GO_SUPPORT_SESSION_RESUME":          "1",
 			"GO_EXPECT_RESUME_SESSION_ID":        "session-1",
-			"GO_FAIL_RESUME_ENTITY_NOT_FOUND_AT": "2",
+			"GO_FAIL_RESUME_ENTITY_NOT_FOUND_AT": "1",
 			"GO_FAIL_PROMPT_ENTITY_NOT_FOUND_AT": "2",
 			"GO_METHOD_LOG":                      methodLog,
 		}),
@@ -1004,7 +1179,7 @@ func TestSessionNotFoundInvalidatesAttachmentBeforeFailedFallback(t *testing.T) 
 			"GO_SESSION_MODELS":                  "model-b",
 			"GO_SUPPORT_SESSION_RESUME":          "1",
 			"GO_EXPECT_RESUME_SESSION_ID":        "session-1",
-			"GO_FAIL_RESUME_ENTITY_NOT_FOUND_AT": "2",
+			"GO_FAIL_RESUME_ENTITY_NOT_FOUND_AT": "1",
 			"GO_FAIL_PROMPT_ENTITY_NOT_FOUND_AT": "2",
 			"GO_FAIL_SESSION_NEW_AT":             "2",
 		}),
